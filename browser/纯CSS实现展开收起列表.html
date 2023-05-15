@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Document</title>
+    <style>
+      .main {
+        border: 1px solid #ddd;
+        margin: 10px;
+      }
+      .btn {
+        display: none;
+        height: 0;
+      }
+      .item {
+        height: 26px;
+        transition: height 0.3s;
+        overflow: hidden;
+      }
+      .main > input {
+        display: none;
+      }
+
+      .main > *:nth-child(n + 7) {
+        height: 0;
+      }
+      .main > *:nth-child(n + 8).btn {
+        height: auto;
+        display: inherit;
+      }
+      .btn::before {
+        content: "点击展开";
+      }
+
+      input:checked ~ .btn::before {
+        content: "点击收起";
+      }
+      input:checked ~ .item {
+        height: 26px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="main">
+      <input id="randId" type="checkbox" />
+      <div class="item">1</div>
+      <div class="item">2</div>
+      <div class="item">3</div>
+      <div class="item">4</div>
+      <div class="item">5</div>
+      <div class="item">6</div>
+      <div class="item">7</div>
+      <div class="item">8</div>
+      <div class="item">9</div>
+      <label for="randId" class="btn"></label>
+    </div>
+    <div class="main">
+      <input id="randId2" type="checkbox" />
+      <div class="item">1</div>
+      <div class="item">2</div>
+      <div class="item">3</div>
+      <div class="item">4</div>
+      <div class="item">5</div>
+      <label for="randId2" class="btn"></label>
+    </div>
+    <div class="main">
+      <input id="randId3" type="checkbox" />
+      <div class="item">1</div>
+      <div class="item">2</div>
+      <div class="item">3</div>
+      <div class="item">4</div>
+      <div class="item">5</div>
+      <div class="item">6</div>
+      <label for="randId3" class="btn"></label>
+    </div>
+  </body>
+</html>
