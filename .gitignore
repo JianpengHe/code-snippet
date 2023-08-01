@@ -1,0 +1,5 @@
+/node_modules
+*.error.log
+*.tsbuildinfo
+*.map
+*.d.ts
