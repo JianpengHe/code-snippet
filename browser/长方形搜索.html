@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+  </head>
+  <body>
+    <div style="z-index: 9999; position: fixed">
+      <div
+        id="box"
+        style="
+          border: 0px solid rgb(0, 0, 0);
+          margin: 200px;
+          width: 300px;
+          height: 300px;
+          /** display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;**/
+        "
+      ></div>
+    </div>
+    <!-- <script>
+      var button = document.getElementsByTagName("button")[0];
+      var queue = new Set();
+      const full = (cx1, cx2, cy1, cy2, width = 160, height = 90) => {
+        console.log(cx1, cx2, cy1, cy2);
+        const arr = [];
+        // if(cx1===cx2){cx2+=width}
+        // if(cx1===cx2){cx2+=height}
+        // cx1 += width / 2;
+        // cx2 -= width / 2;
+        // cy1 += height / 2;
+        // cy2 -= height / 2;
+        for (let x = cx1; x <= cx2; x += width) {
+          for (let y = cy1; y <= cy2; y += height) {
+            arr.push({ x: x + width / 2, y: y + height / 2 });
+          }
+        }
+
+        return arr;
+      };
+      var search = (width = 160, height = 90, x, y, X = x, Y = y) => {
+        /** 目标的x */
+        let tx = x - width,
+          ty = y - height,
+          tX = X + width,
+          tY = Y + height;
+
+        const s = type => {
+          const arr = [];
+          switch (type) {
+            case 0:
+              arr.push(...full(tx, tX - width, ty, ty, width, height));
+              break;
+            case 1:
+              arr.push(...full(tX - width, tX - width, ty, tY - height, width, height));
+              break;
+            case 2:
+              arr.push(...full(tx, tX - width, tY - height, tY - height, width, height).reverse());
+              break;
+            case 3:
+              arr.push(...full(tx, tx, ty, tY - height, width, height).reverse());
+              break;
+          }
+          arr.map(({ x, y }) => queue.add(x * 10000 + y));
+        };
+        s(0);
+        s(1);
+        s(2);
+        s(3);
+        const ca = (w, h) => {
+          if (h > w) {
+            [h, w] = [w, h];
+          }
+          return w / h;
+        };
+        /** 尝试补足x和y，使其接近正方形 */
+        let p = 0;
+        if (tX - tx > tY - ty) {
+          /** 新长方形是躺着的，要增加y方向 */
+          /** 长宽的比例 */
+          p = ca(tX - tx, tY - ty);
+          // console.log(p);
+          while (p > (p = ca(tX - tx, tY - ty + 2 * height))) {
+            console.log(p);
+            ty -= height;
+            tY += height;
+            s(0);
+            s(2);
+          }
+        } else {
+          /** 新长方形是竖着的，要增加x方向 */
+          /** 长宽的比例 */
+          p = ca(tY - ty, tX - tx);
+          console.log(p);
+          while (p > (p = ca(tY - ty, tX - tx + 2 * width))) {
+            //  console.log(p);
+            tx -= width;
+            ty += width;
+            s(1);
+            s(3);
+          }
+        }
+        go();
+        var tw = tX - tx,
+          th = tY - ty;
+        draw(tw, th, tw / 2 + tx, th / 2 + ty);
+        button.onclick = () => {
+          search(width, height, tx, ty, tX, tY);
+        };
+      };
+      const draw = (w, h, x, y, text = "") => {
+        const div = document.createElement("div");
+        div.style.border = "1px solid #000";
+        div.style.width = w + "px";
+        div.style.height = h + "px";
+        div.style.position = "fixed";
+        div.style.left = x - w / 2 + "px";
+        div.style.top = y - h / 2 + "px";
+        if (text) {
+          div.style.lineHeight = h + "px";
+          div.style.textAlign = "center";
+          div.style.background = "#000";
+          div.style.color = "#fff";
+          div.innerHTML = text;
+        }
+
+        document.body.appendChild(div);
+      };
+      let i = 0;
+      const sleep = () => new Promise(r => setTimeout(() => r(), 100));
+      const go = async () => {
+        for (const a of queue) {
+          const x = (a / 10000) | 0;
+          const y = a % 10000;
+          console.log(x, y);
+          i++;
+          draw(160, 90, x, y, String(i));
+          queue.delete(a);
+          await sleep();
+        }
+        //i = 0;
+      };
+      var init = (width = 160, height = 90, x = 1000, y = 1000) => {
+        draw(width, height, x, y);
+        button.onclick = () => {
+          search(width, height, x, y);
+        };
+      };
+      init();
+    </script> -->
+
+    <script>
+      const w = 16 * 4,
+        h = 9 * 4;
+      const W = 300,
+        H = 300;
+
+      const walk = (nowPos = { x: 0, y: 0 }) =>
+        (function* () {
+          const direction = [
+            { axis: "x", change: 1, until: 0 }, //   →
+            { axis: "y", change: 1, until: 0 }, //   ↓
+            { axis: "x", change: -1, until: 0 }, //  ←
+            { axis: "y", change: -1, until: 0 }, //  ↑
+          ];
+          const getWidth = () => (direction[0].until - direction[2].until + 1) * w;
+          const getHeight = () => (direction[1].until - direction[3].until + 1) * h;
+          const getRatio = (width, height) => Math.abs(1 - width / height);
+          //     yield { ...nowPos, axis, change, until };;
+          while (1) {
+            /** 计算四周边界 */
+            for (const obj of direction) {
+              obj.until += obj.change;
+            }
+            nowPos.x--;
+            nowPos.y--;
+
+            /** 走四周 */
+            for (const { axis, change, until } of direction) {
+              while (nowPos[axis] !== until) {
+                nowPos[axis] += change;
+                yield { ...nowPos, axis, change, until };
+              }
+            }
+            /** 胖瘦判断 */
+            let width = getWidth();
+            let height = getHeight();
+            /** 越小越接近正方形 */
+            let ratio = getRatio(width, height);
+            if (ratio === 0) {
+              /** 正方形 */
+              continue;
+            }
+            if (width > height) {
+              while (getRatio(width, height + 2 * h) < ratio) {
+                // console.log("todo →");
+                // debugger;
+                if (1) {
+                  /** 起始位置 */
+                  nowPos.y = direction[3].until += direction[3].change;
+                  const { axis, change, until } = direction[0];
+                  yield { ...nowPos, axis, change, until };
+                  while (nowPos[axis] !== until) {
+                    nowPos[axis] += change;
+                    yield { ...nowPos, axis, change, until };
+                  }
+                }
+                // console.log("todo ←");
+                if (1) {
+                  nowPos.y = direction[1].until += direction[1].change;
+                  const { axis, change, until } = direction[2];
+                  yield { ...nowPos, axis, change, until };
+                  while (nowPos[axis] !== until) {
+                    nowPos[axis] += change;
+                    yield { ...nowPos, axis, change, until };
+                  }
+                }
+                height = getHeight();
+                // console.log(width, height, ratio, getRatio(width, height));
+                ratio = getRatio(width, height);
+                /** 现在在右下角，要修复y坐标 */
+                nowPos.y = direction[3].until;
+              }
+            } else {
+              while (getRatio(width + 2 * w, height) < ratio) {
+                // console.log("todo ↓");
+                if (1) {
+                  /** 起始位置 */
+                  nowPos.x = direction[0].until += direction[0].change;
+                  const { axis, change, until } = direction[1];
+                  yield { ...nowPos, axis, change, until };
+                  while (nowPos[axis] !== until) {
+                    nowPos[axis] += change;
+                    yield { ...nowPos, axis, change, until };
+                  }
+                }
+                // console.log("todo ↑");
+                if (1) {
+                  nowPos.x = direction[2].until += direction[2].change;
+                  const { axis, change, until } = direction[3];
+                  yield { ...nowPos, axis, change, until };
+                  while (nowPos[axis] !== until) {
+                    nowPos[axis] += change;
+                    yield { ...nowPos, axis, change, until };
+                  }
+                }
+                width = getWidth();
+                // console.log(width, height, ratio, getRatio(width, height));
+                ratio = getRatio(width, height);
+                /** 已经回到左上角，不用修复 */
+                //    nowPos.x = direction[0].until;
+              }
+            }
+          }
+        })();
+
+      const div = document.getElementById("box");
+      div.style.width = W + "px";
+      div.style.height = H + "px";
+      const main = document.createElement("div");
+      main.style.transition = "transform 0.3s";
+      main.style.width = main.style.height = "0px";
+      div.appendChild(main);
+
+      const side = {
+        minX: Infinity,
+        minY: Infinity,
+        maxX: -Infinity,
+        maxY: -Infinity,
+      };
+      const scale = () => {
+        const width = (side.maxX - side.minX + 1) * w;
+        const height = (side.maxY - side.minY + 1) * h;
+        const scale = Math.min(1, W / (width + w), H / (height + h));
+        // main.style.width = width + "px";
+        // main.style.height = height + "px";
+        main.style.transform = `translate(${W / 2 - ((side.maxX + side.minX) / 2) * w * scale}px,${
+          H / 2 - ((side.maxY + side.minY) / 2) * h * scale
+        }px) scale(${scale})`;
+      };
+      const write = (pos = { x: 0, y: 0 }, text = "", backgroundColor = "#000") => {
+        const div = document.createElement("div");
+        div.style.width = w + "px";
+        div.style.height = h + "px";
+        div.style.margin = `-${h}px -${w}px`;
+        div.style.transform = `translate(${pos.x * w + w / 2}px, ${pos.y * h - h / 2}px)`;
+        //div.style.position = "fixed";
+        // div.style.left = pos.x * w + 1000 - w / 2 + "px";
+        // div.style.top = pos.y * h + 1000 - h / 2 + "px";
+        if (text) {
+          div.style.lineHeight = h + "px";
+          div.style.textAlign = "center";
+          div.style.background = backgroundColor;
+          div.style.color = "#fff";
+          div.innerHTML = text;
+        }
+        main.appendChild(div);
+        if (pos.x < side.minX) {
+          side.minX = pos.x;
+          scale();
+        }
+        if (pos.y < side.minY) {
+          side.minY = pos.y;
+          scale();
+        }
+        if (pos.x > side.maxX) {
+          side.maxX = pos.x;
+          scale();
+        }
+        if (pos.y > side.maxY) {
+          side.maxY = pos.y;
+          scale();
+        }
+      };
+
+      (async () => {
+        let i = 1;
+        let prePos;
+        write({ x: 0, y: 0 }, "您的位置", "red");
+        for (const pos of walk()) {
+          if (prePos) {
+            if (pos.x > 3 || pos.y > 4) {
+              console.log(prePos, pos);
+              continue;
+            }
+          }
+          prePos = pos;
+          // console.log(pos);
+          write(pos, String(i++), "#000");
+          // debugger;
+          // await new Promise(r => (button.onclick = r));
+          await new Promise(r => setTimeout(r, 100));
+          if (i > 508) {
+            break;
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>
