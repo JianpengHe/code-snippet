@@ -21,137 +21,6 @@
         "
       ></div>
     </div>
-    <!-- <script>
-      var button = document.getElementsByTagName("button")[0];
-      var queue = new Set();
-      const full = (cx1, cx2, cy1, cy2, width = 160, height = 90) => {
-        console.log(cx1, cx2, cy1, cy2);
-        const arr = [];
-        // if(cx1===cx2){cx2+=width}
-        // if(cx1===cx2){cx2+=height}
-        // cx1 += width / 2;
-        // cx2 -= width / 2;
-        // cy1 += height / 2;
-        // cy2 -= height / 2;
-        for (let x = cx1; x <= cx2; x += width) {
-          for (let y = cy1; y <= cy2; y += height) {
-            arr.push({ x: x + width / 2, y: y + height / 2 });
-          }
-        }
-
-        return arr;
-      };
-      var search = (width = 160, height = 90, x, y, X = x, Y = y) => {
-        /** 目标的x */
-        let tx = x - width,
-          ty = y - height,
-          tX = X + width,
-          tY = Y + height;
-
-        const s = type => {
-          const arr = [];
-          switch (type) {
-            case 0:
-              arr.push(...full(tx, tX - width, ty, ty, width, height));
-              break;
-            case 1:
-              arr.push(...full(tX - width, tX - width, ty, tY - height, width, height));
-              break;
-            case 2:
-              arr.push(...full(tx, tX - width, tY - height, tY - height, width, height).reverse());
-              break;
-            case 3:
-              arr.push(...full(tx, tx, ty, tY - height, width, height).reverse());
-              break;
-          }
-          arr.map(({ x, y }) => queue.add(x * 10000 + y));
-        };
-        s(0);
-        s(1);
-        s(2);
-        s(3);
-        const ca = (w, h) => {
-          if (h > w) {
-            [h, w] = [w, h];
-          }
-          return w / h;
-        };
-        /** 尝试补足x和y，使其接近正方形 */
-        let p = 0;
-        if (tX - tx > tY - ty) {
-          /** 新长方形是躺着的，要增加y方向 */
-          /** 长宽的比例 */
-          p = ca(tX - tx, tY - ty);
-          // console.log(p);
-          while (p > (p = ca(tX - tx, tY - ty + 2 * height))) {
-            console.log(p);
-            ty -= height;
-            tY += height;
-            s(0);
-            s(2);
-          }
-        } else {
-          /** 新长方形是竖着的，要增加x方向 */
-          /** 长宽的比例 */
-          p = ca(tY - ty, tX - tx);
-          console.log(p);
-          while (p > (p = ca(tY - ty, tX - tx + 2 * width))) {
-            //  console.log(p);
-            tx -= width;
-            ty += width;
-            s(1);
-            s(3);
-          }
-        }
-        go();
-        var tw = tX - tx,
-          th = tY - ty;
-        draw(tw, th, tw / 2 + tx, th / 2 + ty);
-        button.onclick = () => {
-          search(width, height, tx, ty, tX, tY);
-        };
-      };
-      const draw = (w, h, x, y, text = "") => {
-        const div = document.createElement("div");
-        div.style.border = "1px solid #000";
-        div.style.width = w + "px";
-        div.style.height = h + "px";
-        div.style.position = "fixed";
-        div.style.left = x - w / 2 + "px";
-        div.style.top = y - h / 2 + "px";
-        if (text) {
-          div.style.lineHeight = h + "px";
-          div.style.textAlign = "center";
-          div.style.background = "#000";
-          div.style.color = "#fff";
-          div.innerHTML = text;
-        }
-
-        document.body.appendChild(div);
-      };
-      let i = 0;
-      const sleep = () => new Promise(r => setTimeout(() => r(), 100));
-      const go = async () => {
-        for (const a of queue) {
-          const x = (a / 10000) | 0;
-          const y = a % 10000;
-          console.log(x, y);
-          i++;
-          draw(160, 90, x, y, String(i));
-          queue.delete(a);
-          await sleep();
-        }
-        //i = 0;
-      };
-      var init = (width = 160, height = 90, x = 1000, y = 1000) => {
-        draw(width, height, x, y);
-        button.onclick = () => {
-          search(width, height, x, y);
-        };
-      };
-      init();
-    </script> -->
-
     <script>
       const w = 16 * 4,
         h = 9 * 4;
@@ -275,8 +144,6 @@
         const width = (side.maxX - side.minX + 1) * w;
         const height = (side.maxY - side.minY + 1) * h;
         const scale = Math.min(1, W / (width + w), H / (height + h));
-        // main.style.width = width + "px";
-        // main.style.height = height + "px";
         main.style.transform = `translate(${W / 2 - ((side.maxX + side.minX) / 2) * w * scale}px,${
           H / 2 - ((side.maxY + side.minY) / 2) * h * scale
         }px) scale(${scale})`;
@@ -287,9 +154,6 @@
         div.style.height = h + "px";
         div.style.margin = `-${h}px -${w}px`;
         div.style.transform = `translate(${pos.x * w + w / 2}px, ${pos.y * h - h / 2}px)`;
-        //div.style.position = "fixed";
-        // div.style.left = pos.x * w + 1000 - w / 2 + "px";
-        // div.style.top = pos.y * h + 1000 - h / 2 + "px";
         if (text) {
           div.style.lineHeight = h + "px";
           div.style.textAlign = "center";
@@ -318,51 +182,50 @@
 
       (async () => {
         let i = 1;
-        let prePos;
         const side = {
           minX: -Infinity,
           minY: -Infinity,
           maxX: Infinity,
           maxY: Infinity,
         };
+        let banTimes = 0;
         const check = (x, y) => {
-          if (x > 3 || y > 4) {
-            console.log("ban");
+          if (x > 3) {
+            side.maxX = x;
+            return false;
+          }
+          if (y > 4) {
+            side.maxY = y;
+            return false;
+          }
+          if (x < -10) {
+            side.minX = x;
+            return false;
+          }
+          if (y < -15) {
+            side.minY = y;
             return false;
           }
           return true;
         };
+        const errCodeSet = new Set();
         write({ x: 0, y: 0 }, "您的位置", "red");
         for (const pos of walk()) {
-          await new Promise(r => setTimeout(r, 10));
-          console.log(pos.x > side.maxX, pos.x < side.minX, pos.y > side.maxY, pos.y < side.minY);
+          //  await new Promise(r => setTimeout(r, 10));
           if (pos.x >= side.maxX || pos.x <= side.minX || pos.y >= side.maxY || pos.y <= side.minY) {
-            prePos = pos;
             continue;
           }
-          if (prePos && prePos.axis !== pos.axis) {
-            if (!check(pos.x, pos.y)) {
-              side[`${prePos.change > 0 ? "max" : "min"}${prePos.axis.toUpperCase()}`] = prePos.until;
-              console.log(prePos, side);
-              prePos = pos;
-              debugger;
-              continue;
+          if (!check(pos.x, pos.y)) {
+            if (++banTimes >= 4) {
+              break;
             }
+            continue;
           }
-
-          // if (pos.x > 3 || pos.y > 4) {
-          //
-          //
-          // }
-          prePos = pos;
-          // console.log(pos);
           write(pos, String(i++), "#000");
-          // debugger;
-          // await new Promise(r => (button.onclick = r));
           await new Promise(r => setTimeout(r, 20));
-          if (i > 508) {
-            break;
-          }
+          // if (i > 508) {
+          //   break;
+          // }
         }
       })();
     </script>
