@@ -319,20 +319,47 @@
       (async () => {
         let i = 1;
         let prePos;
+        const side = {
+          minX: -Infinity,
+          minY: -Infinity,
+          maxX: Infinity,
+          maxY: Infinity,
+        };
+        const check = (x, y) => {
+          if (x > 3 || y > 4) {
+            console.log("ban");
+            return false;
+          }
+          return true;
+        };
         write({ x: 0, y: 0 }, "您的位置", "red");
         for (const pos of walk()) {
-          if (prePos) {
-            if (pos.x > 3 || pos.y > 4) {
-              console.log(prePos, pos);
+          await new Promise(r => setTimeout(r, 10));
+          console.log(pos.x > side.maxX, pos.x < side.minX, pos.y > side.maxY, pos.y < side.minY);
+          if (pos.x >= side.maxX || pos.x <= side.minX || pos.y >= side.maxY || pos.y <= side.minY) {
+            prePos = pos;
+            continue;
+          }
+          if (prePos && prePos.axis !== pos.axis) {
+            if (!check(pos.x, pos.y)) {
+              side[`${prePos.change > 0 ? "max" : "min"}${prePos.axis.toUpperCase()}`] = prePos.until;
+              console.log(prePos, side);
+              prePos = pos;
+              debugger;
               continue;
             }
           }
+
+          // if (pos.x > 3 || pos.y > 4) {
+          //
+          //
+          // }
           prePos = pos;
           // console.log(pos);
           write(pos, String(i++), "#000");
           // debugger;
           // await new Promise(r => (button.onclick = r));
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise(r => setTimeout(r, 20));
           if (i > 508) {
             break;
           }
