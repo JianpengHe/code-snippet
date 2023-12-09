@@ -3,6 +3,7 @@ navigator.mediaDevices
     .getUserMedia({
     audio: {
         sampleRate: 48000,
+        channelCount: 1,
         autoGainControl: false,
         noiseSuppression: false,
         echoCancellation: false,
