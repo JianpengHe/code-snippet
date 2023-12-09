@@ -1,4 +1,4 @@
-function find<E, T extends Array<E> | Buffer>(
+export function find<E, T extends Array<E> | Buffer>(
   arr1: T,
   arr2: T,
   maxTimes = Infinity,
@@ -8,9 +8,8 @@ function find<E, T extends Array<E> | Buffer>(
   let output: null | { main: T; child: T; index: number } = null;
   const indexOf = (arrA: T, arrB: T, index: number) => {
     /** 判断arrB在不在arrA里面 */
-    let j = 0;
     const end = Math.min(maxIndex, arrB.length, maxTimes);
-    for (; j < end; j++) {
+    for (let j = 0; j < end; j++) {
       if (!judge(arrA[index + j], arrB[j])) return;
     }
     output = { main: arrA, child: arrB, index };
@@ -29,12 +28,12 @@ function find<E, T extends Array<E> | Buffer>(
 }
 
 // 测试用例
-console.log(find([1, 2, 3, 4], [3, 4, 5], 2));
+// console.log(find([1, 2, 3, 4], [3, 4, 5], 2));
 
-console.log(find(Buffer.from([0xff, 0xfe, 0x82]), Buffer.from([0x70, 0x60, 0xff, 0xfe, 0x67]), 2));
-console.log(
-  find(Buffer.from([0xff, 0xfe, 0x82]), Buffer.from([0x70, 0x60, 0xff - 3, 0xfe + 4, 0x67]), 2, (a, b) => {
-    const diff = Math.abs(a - b);
-    return diff < 5 || diff > 250;
-  })
-);
+// console.log(find(Buffer.from([0xff, 0xfe, 0x82]), Buffer.from([0x70, 0x60, 0xff, 0xfe, 0x67]), 2));
+// console.log(
+//   find(Buffer.from([0xff, 0xfe, 0x82]), Buffer.from([0x70, 0x60, 0xff - 3, 0xfe + 4, 0x67]), 2, (a, b) => {
+//     const diff = Math.abs(a - b);
+//     return diff < 5 || diff > 250;
+//   })
+// );
