@@ -152,8 +152,11 @@
         const div = document.createElement("div");
         div.style.width = w + "px";
         div.style.height = h + "px";
-        div.style.margin = `-${h}px -${w}px`;
-        div.style.transform = `translate(${pos.x * w + w / 2}px, ${pos.y * h - h / 2}px)`;
+        //  div.style.margin = `-${h}px -${w}px`;
+        div.style.position = "absolute";
+        div.style.left = 0;
+        div.style.top = 0;
+        div.style.transform = `translate(${pos.x * w - w / 2}px, ${pos.y * h - h / 2}px)`;
         if (text) {
           div.style.lineHeight = h + "px";
           div.style.textAlign = "center";
