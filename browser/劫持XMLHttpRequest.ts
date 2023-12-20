@@ -28,4 +28,21 @@
       });
     },
   });
+  const fetch = window.fetch;
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit | undefined) => {
+    const res = await fetch(input, init);
+    return new Proxy(res, {
+      get(target: Response, p: string | symbol) {
+        if (p === "arrayBuffer" || p === "blob" || p === "formData" || p === "json" || p === "text") {
+          return async () => {
+            const body = await res[p]();
+            // TODO: do any things
+            console.log(input, body);
+            return body;
+          };
+        }
+        return target[p];
+      },
+    });
+  };
 })();
