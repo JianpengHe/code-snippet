@@ -4,7 +4,7 @@
     construct() {
       return new Proxy(new XMLHttpRequest(), {
         set(target, p, newValue) {
-          if (p === "onreadystatechange" || p === "onload") {
+          if (typeof newValue === "function") {
             target[p] = (...args) => {
               /** 拦截onreadystatechang事件 */
               if (target.readyState === 4) {
