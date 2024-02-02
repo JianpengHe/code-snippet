@@ -7,7 +7,7 @@ export class ReliableWebSocket {
     this.reconnect();
   }
   public reconnect() {
-    if (this.reConTimer || this.webSocket?.readyState === 1) return;
+    if (!this.url || this.reConTimer || this.webSocket?.readyState === 1) return;
     if (this.webSocket?.readyState === 0) {
       this.reConTimer = Number(
         setTimeout(() => {
@@ -50,7 +50,10 @@ export class ReliableWebSocket {
     return this;
   }
   private readyToSendbufs: IWebSocketSendData[] = [];
-
+  public close() {
+    this.url = "";
+    this.webSocket?.close();
+  }
   private eventListeners: [string, any][] = [];
   public addEventListener<K extends keyof WebSocketEventMap>(
     type: K,
