@@ -45,36 +45,47 @@
 
   const worker = new Worker(workerScript);
   const fakeIdToCallback: Map<number, () => void> = new Map();
-  let lastFakeId = 0;
-
-  global.setInterval = function <T extends any[]>(callback: (...args: T) => void, timeout?: number, ...args: T) {
-    const fakeId = ++lastFakeId;
-    fakeIdToCallback.set(fakeId, () => callback(...args));
-    worker.postMessage({ name: "setInterval", fakeId, timeout });
-    return fakeId;
-  };
-  global.clearInterval = function (fakeId: number) {
-    if (fakeIdToCallback.has(fakeId)) {
-      fakeIdToCallback.delete(fakeId);
-      worker.postMessage({ name: "clearInterval", fakeId });
+  const getFakeId = () => {
+    while (1) {
+      const id = Math.floor(Math.random() * 1e10);
+      if (!fakeIdToCallback.has(id)) return id;
     }
+    throw new Error("error");
   };
+  (({ clearInterval, clearTimeout }) => {
+    global.setInterval = function <T extends any[]>(callback: (...args: T) => void, timeout?: number, ...args: T) {
+      const fakeId = getFakeId();
+      fakeIdToCallback.set(fakeId, () => callback(...args));
+      worker.postMessage({ name: "setInterval", fakeId, timeout });
+      return fakeId;
+    };
+    global.clearInterval = function (fakeId: number) {
+      if (fakeIdToCallback.has(fakeId)) {
+        fakeIdToCallback.delete(fakeId);
+        worker.postMessage({ name: "clearInterval", fakeId });
+      } else {
+        clearInterval(fakeId);
+      }
+    };
 
-  global.setTimeout = function <T extends any[]>(callback: (...args: T) => void, timeout?: number, ...args: T) {
-    const fakeId = ++lastFakeId;
-    fakeIdToCallback.set(fakeId, () => {
-      fakeIdToCallback.delete(fakeId);
-      callback(...args);
-    });
-    worker.postMessage({ name: "setTimeout", fakeId, timeout });
-    return fakeId;
-  };
-  global.clearTimeout = function (fakeId: number) {
-    if (fakeIdToCallback.has(fakeId)) {
-      fakeIdToCallback.delete(fakeId);
-      worker.postMessage({ name: "clearTimeout", fakeId });
-    }
-  };
+    global.setTimeout = function <T extends any[]>(callback: (...args: T) => void, timeout?: number, ...args: T) {
+      const fakeId = getFakeId();
+      fakeIdToCallback.set(fakeId, () => {
+        fakeIdToCallback.delete(fakeId);
+        callback(...args);
+      });
+      worker.postMessage({ name: "setTimeout", fakeId, timeout });
+      return fakeId;
+    };
+    global.clearTimeout = function (fakeId: number) {
+      if (fakeIdToCallback.has(fakeId)) {
+        fakeIdToCallback.delete(fakeId);
+        worker.postMessage({ name: "clearTimeout", fakeId });
+      } else {
+        clearTimeout(fakeId);
+      }
+    };
+  })(global);
 
   worker.onmessage = function ({ data }) {
     const callback = fakeIdToCallback.get(data);
