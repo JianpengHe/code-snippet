@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+        content="width=device-width,user-scalable=no,initial-scale=1, minimum-scale=1,maximum-scale=1" />
+    <title>Document</title>
+    <style>
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            margin: 0;
+        }
+
+        .point {
+            --size: 10px;
+            width: var(--size);
+            height: var(--size);
+            border-radius: 50%;
+            position: fixed;
+            z-index: 100;
+            top: calc(var(--size) / -2);
+            left: calc(var(--size) / -2);
+            display: none;
+            transform: translate(0, 0);
+            transition: all 1s linear;
+        }
+
+        #tips {
+            position: fixed;
+            bottom: 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="tips"></div>
+    <div class="point" style="background-color: red;"></div>
+    <div class="point" style="background-color: blue"></div>
+</body>
+<script> var exports = {}</script>
+<script src="Gesture.js"></script>
+<script>
+
+    0 && (() => {
+
+        const transformOrigin = { x: 100, y: 100 }
+        const pointStartPositions = [{ x: 410, y: 370 }, { x: 890, y: 410 }];
+        const ponits = [...document.getElementsByClassName("point")];
+        let pre = {
+            translateX: 0,
+            transformY: 0,
+            rotate: 0,
+            scale: 1,
+            transformText: ``
+        }
+        const getRad = (p1, p2) => Math.atan2((p2.y - p1.y), (p2.x - p1.x))
+        /** 两点间距离 */
+        const getDistance = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        /** 旋转后的新坐标 */
+        const afterRotate = (p, origin, rad, scale) => {
+            const x = p.x - origin.x;
+            const y = p.y - origin.y;
+            /** 参考：https://blog.csdn.net/weixin_34910922/article/details/121569340 */
+            return {
+                x: (Math.cos(rad) * x - Math.sin(rad) * y) * scale + origin.x,
+                y: (Math.sin(rad) * x + Math.cos(rad) * y) * scale + origin.y,
+            }
+        }
+        const img = new Image()
+        img.src = "https://t7.baidu.com/it/u=2621658848,3952322712&fm=193";
+        img.style.transition = "all 1s linear";
+        img.style.transformOrigin = `${transformOrigin.x}px ${transformOrigin.y}px`
+        img.onload = () => {
+            pointStartPositions.forEach(({ x, y }, i) => {
+                ponits[i].style.transform = `translate(${x}px, ${y}px)`;
+                ponits[i].style.display = "unset"
+            })
+            document.body.appendChild(img);
+            setTimeout(() => {
+                //img.style.transform = `rotate(${rad}rad)`
+                //go([pointStartPositions[0], { x: Math.random() * img.width, y: Math.random() * img.height }])
+                //go([pointStartPositions[0], { x: 600, y: 600 }])
+                go([{ x: Math.random() * img.width, y: Math.random() * img.height }, { x: Math.random() * img.width, y: Math.random() * img.height }])
+            }, 1000);
+
+        }
+        const rad = getRad(pointStartPositions[0], pointStartPositions[1]);
+        const distance = getDistance(pointStartPositions[0], pointStartPositions[1]);
+
+        const go = (pointEndPositions) => {
+            pointEndPositions.forEach(({ x, y }, i) => {
+                ponits[i].style.transform = `translate(${x}px, ${y}px)`;
+                ponits[i].style.display = "unset"
+            })
+            const newRad = getRad(pointEndPositions[0], pointEndPositions[1])
+            const rotate = newRad - rad;
+            const scale = getDistance(pointEndPositions[0], pointEndPositions[1]) / distance
+            const afterRotatePoint = afterRotate(pointStartPositions[0], transformOrigin, rotate, scale)
+            const translateX = pointEndPositions[0].x - afterRotatePoint.x
+            const transformY = pointEndPositions[0].y - afterRotatePoint.y
+            pre = {
+                translateX,
+                transformY,
+                rotate,
+                scale,
+                transformText: `translate(${translateX}px, ${transformY}px) rotate(${rotate}rad) scale(${scale})`
+            }
+            img.style.transform = pre.transformText
+            return pre;
+            console.log(rotate, rotate * 180 / Math.PI)
+            // const sit=getRad(pointStartPositions[0], pointStartPositions[1])
+
+            // ponits[1].style.transform = `translate(${x}px, ${y}px)`;
+
+        }
+
+    })()
+
+
+    // window.onmousemove = ({ x, y }) => {
+    //     const a = getRad(pointStartPositions[0], { x, y })
+    //     document.getElementById("tips").innerHTML = (a * 180 / Math.PI)
+    // }
+</script>
+
+</html>

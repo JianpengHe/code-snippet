@@ -1,9 +1,5 @@
 lockfileVersion: '6.0'
 
-settings:
-  autoInstallPeers: true
-  excludeLinksFromLockfile: false
-
 devDependencies:
   '@types/node':
     specifier: ^20.1.0
@@ -32,3 +28,7 @@ packages:
     engines: {node: '>=12.20'}
     hasBin: true
     dev: true
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
