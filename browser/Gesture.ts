@@ -33,7 +33,7 @@ export class Gesture {
             this.transformRes.transformY = transformY;
             this.transformRes.rotate = rotate;
             this.transformRes.scale = scale;
-            this.transformRes.transformText = `translate3d(${translateX}px, ${transformY}px,0) rotate3d(0, 0, 1,${rotate * 180 / Math.PI}deg) scale3d(${scale},${scale},${scale})`
+            this.transformRes.transformText = `translate3d(${translateX}px, ${transformY}px,0) rotate3d(0, 0, 1,${rotate}rad) scale3d(${scale},${scale},${scale})`
             this.onTransform()
         }
     }
