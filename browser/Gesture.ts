@@ -29,14 +29,12 @@ export class Gesture {
     transformText: ``,
   };
   private readonly transformOrigin: IGesturePoint;
-  private startPoints: { rad: number; distance: number; points: IGesturePoint[]; isActive: boolean } = {
-    points: [],
-    rad: 0,
-    distance: 0,
-    isActive: false,
-  };
+  private startPoints: { rad: number; distance: number; points: IGesturePoint[] } = { points: [], rad: 0, distance: 0 };
+
   private lastClickPoint: IGesturePoint & { expire: number; type: string } = { x: 0, y: 0, expire: 0, type: "" };
-  private transform(points: IGesturePoint[], rotate: number, scale: number) {
+  public transform(obj: { points: IGesturePoint[]; rotate: number; scale: number }) {
+    this.beforeTransform(obj, this.transformRes);
+    const { points, rotate, scale } = obj;
     const afterRotatePoint = this.afterRotate(this.startPoints.points[0] || points[0], rotate, scale);
     this.transformRes.translateX = points[0].x - afterRotatePoint.x + this.preEndTransformRes.translateX;
     this.transformRes.translateY = points[0].y - afterRotatePoint.y + this.preEndTransformRes.translateY;
@@ -46,20 +44,51 @@ export class Gesture {
     this.onTransform(this.transformRes);
   }
   private onMove(ev: TouchEvent | MouseEvent) {
+    if (this.disable) return;
     ev.preventDefault();
-    const ponits = this.getPonits(ev);
-    if (ponits.length < 1) return;
-    const isSingleFinger = ponits.length === 1;
-    const newRad = isSingleFinger ? this.startPoints.rad : Gesture.getRad(ponits[0], ponits[1]);
-    const newScale = isSingleFinger ? this.startPoints.distance : Gesture.getDistance(ponits[0], ponits[1]);
-    return this.transform(ponits, newRad - this.startPoints.rad, newScale / this.startPoints.distance);
+    const points = this.getPonits(ev);
+    if (points.length < 1) return;
+    const isSingleFinger = points.length === 1;
+    const newRad = isSingleFinger ? this.startPoints.rad : Gesture.getRad(points[0], points[1]);
+    const newScale = isSingleFinger ? this.startPoints.distance : Gesture.getDistance(points[0], points[1]);
+    return this.transform({
+      points,
+      rotate: newRad - this.startPoints.rad,
+      scale: newScale / this.startPoints.distance,
+    });
   }
+  private onGestureEndTimer = 0;
   private onEnd(ev: TouchEvent | MouseEvent) {
     ev.preventDefault();
     for (const k in this.transformRes) {
       this.preEndTransformRes[k] = this.transformRes[k];
     }
     const points = this.getPonits(ev);
+
+    if (ev.type === "mouseup" || (ev.type === "touchend" && this.getPonits(ev, true).length === 0)) {
+      this.removeAllListener();
+      this.isGestureActive = false;
+      const transformRes = { ...this.transformRes };
+      const startPoints = { ...this.startPoints };
+      const now = performance.now();
+      if (now > this.lastClickPoint.expire || this.lastClickPoint.type === "firstPoint") {
+        this.lastClickPoint.expire = 0;
+        this.lastClickPoint.type = "";
+        this.onGestureEndTimer && clearTimeout(this.onGestureEndTimer);
+        this.onGestureEndTimer = 0;
+        this.onGestureEnd(transformRes, startPoints);
+      } else {
+        this.lastClickPoint.expire = now + 300;
+        this.lastClickPoint.type = "firstPoint";
+        this.onGestureEndTimer = Number(
+          setTimeout(() => {
+            this.onGestureEndTimer = 0;
+            if (this.isGestureActive) return;
+            this.onGestureEnd(transformRes, startPoints);
+          }, 350)
+        );
+      }
+    }
     this.startPoints.points = points;
     this.startPoints.rad = 0;
     this.startPoints.distance = 1;
@@ -67,25 +96,27 @@ export class Gesture {
       this.startPoints.rad = Gesture.getRad(points[0], points[1]);
       this.startPoints.distance = Gesture.getDistance(points[0], points[1]);
     }
-    if (ev.type === "mouseup" || (ev.type === "touchend" && this.getPonits(ev, true).length === 0)) {
-      this.removeAllListener();
-      const now = performance.now();
-      if (now > this.lastClickPoint.expire || this.lastClickPoint.type === "firstPoint") {
-        this.lastClickPoint.expire = 0;
-        this.lastClickPoint.type = "";
-      } else {
-        this.lastClickPoint.expire = now + 300;
-        this.lastClickPoint.type = "firstPoint";
-      }
-    }
   }
   private onScale(ev: WheelEvent | MouseEvent) {
-    const ponits = this.getPonits(ev);
+    if (this.disable) return;
+    const points = this.getPonits(ev);
+    this.onGestureEndTimer && clearTimeout(this.onGestureEndTimer);
+    this.onGestureEndTimer = Number(
+      setTimeout(() => {
+        this.onGestureEndTimer = 0;
+        if (this.isGestureActive) return;
+        this.onGestureEnd(this.transformRes, this.startPoints);
+      }, 10)
+    );
     if (ev instanceof WheelEvent) this.onEnd(ev);
-    this.transform(ponits, 0, (ev["wheelDeltaY"] || 0) < 0 ? 0.7 : 1.5);
+    this.transform({ points, rotate: 0, scale: (ev["wheelDeltaY"] || 0) < 0 ? 0.7 : 1.5 });
   }
 
   private onStart(ev: TouchEvent | MouseEvent) {
+    if (this.disable) return;
+    this.isGestureActive = true;
+    this.onGestureEndTimer && clearTimeout(this.onGestureEndTimer);
+    this.onGestureEndTimer = 0;
     const points = this.getPonits(ev);
     if (points.length === 1) {
       const now = performance.now();
@@ -99,6 +130,7 @@ export class Gesture {
       }
     }
     this.onEnd(ev);
+    this.onGestureStart(this.transformRes, this.startPoints);
     this.removeAllListener();
     this.addAllListener();
   }
@@ -122,6 +154,17 @@ export class Gesture {
   private onEndListener: (ev: TouchEvent | MouseEvent) => void;
   public onScaleListener: (ev: WheelEvent | MouseEvent) => void;
   public onTransform = (transformRes: IGestureTransformRes): void => {};
+  public onGestureStart = (transformRes: IGestureTransformRes, startPoints: Gesture["startPoints"]): void => {};
+  public onGestureEnd = (transformRes: IGestureTransformRes, startPoints: Gesture["startPoints"]): void => {};
+  /** 是否正在手势动作 */
+  public isGestureActive = false;
+  /** 旋转/缩放前回调 */
+  public beforeTransform = (
+    obj: { points: IGesturePoint[]; rotate: number; scale: number },
+    transformRes: IGestureTransformRes
+  ): void => {};
+  /** 是否禁用 */
+  public disable = false;
 
   /** 从原生事件里获取坐标 */
   public getPonits(ev: TouchEvent | MouseEvent, getRaw = false): IGesturePoint[] {
@@ -173,5 +216,31 @@ export class Gesture {
 //   img.addEventListener("dblclick", gesture.onScaleListener, false);
 //   gesture.onTransform = ({ transformText }) => {
 //     img.style.transform = transformText;
+//   };
+//   gesture.beforeTransform = obj => {
+//     // obj.rotate = 0;
+//   };
+//   gesture.onGestureEnd = (transformRes, startPoints) => {
+//     console.log("onGestureEnd");
+//     /** 限制旋转角度 */
+//     let rotate = transformRes.rotate / (Math.PI / 2);
+//     rotate = Math.round(rotate) * (Math.PI / 2) - transformRes.rotate;
+
+//     /** 限制最大缩放 */
+//     let scale = 1;
+//     if (transformRes.scale > 3) {
+//       scale = 3 / transformRes.scale;
+//     } else if (transformRes.scale < 0.3) {
+//       scale = 0.3 / transformRes.scale;
+//     }
+//     if (rotate || scale !== 1) {
+//       img.style.transition = "transform 0.2s";
+//       gesture.disable = true;
+//       gesture.transform({ points: startPoints.points, scale, rotate });
+//     }
+//   };
+//   img.ontransitionend = () => {
+//     img.style.transition = "";
+//     gesture.disable = false;
 //   };
 // };

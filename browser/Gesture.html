@@ -217,6 +217,32 @@
       gesture.onTransform = ({ transformText }) => {
         img.style.transform = transformText;
       };
+      gesture.beforeTransform = obj => {
+        // obj.rotate = 0;
+      };
+      gesture.onGestureEnd = (transformRes, startPoints) => {
+        console.log("onGestureEnd");
+        /** 限制旋转角度 */
+        let rotate = transformRes.rotate / (Math.PI / 2);
+        rotate = Math.round(rotate) * (Math.PI / 2) - transformRes.rotate;
+
+        /** 限制最大缩放 */
+        let scale = 1;
+        if (transformRes.scale > 3) {
+          scale = 3 / transformRes.scale;
+        } else if (transformRes.scale < 0.3) {
+          scale = 0.3 / transformRes.scale;
+        }
+        if (rotate || scale !== 1) {
+          img.style.transition = "transform 0.2s";
+          gesture.disable = true;
+          gesture.transform({ points: startPoints.points, scale, rotate });
+        }
+      };
+      img.ontransitionend = () => {
+        img.style.transition = "";
+        gesture.disable = false;
+      };
     };
 
     // window.onmousemove = ({ x, y }) => {
