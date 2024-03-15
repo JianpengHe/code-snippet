@@ -1,72 +1,158 @@
-export type IGesturePoint = { x: number, y: number }
+export type IGesturePoint = { x: number; y: number };
+export type IGestureTransformRes = {
+  translateX: number;
+  translateY: number;
+  rotate: number;
+  scale: number;
+  transformText: string;
+};
 export class Gesture {
-    constructor() {
+  constructor(transformOrigin: IGesturePoint = { x: 0, y: 0 }) {
+    this.transformOrigin = transformOrigin;
+    this.onStartListener = this.onStart.bind(this);
+    this.onMoveListener = this.onMove.bind(this);
+    this.onEndListener = this.onEnd.bind(this);
+    this.onScaleListener = this.onScale.bind(this);
+  }
+  private readonly transformRes: IGestureTransformRes = {
+    translateX: 0,
+    translateY: 0,
+    rotate: 0,
+    scale: 1,
+    transformText: ``,
+  };
+  private readonly preEndTransformRes: IGestureTransformRes = {
+    translateX: 0,
+    translateY: 0,
+    rotate: 0,
+    scale: 1,
+    transformText: ``,
+  };
+  private readonly transformOrigin: IGesturePoint;
+  private startPoints: { rad: number; distance: number; points: IGesturePoint[]; isActive: boolean } = {
+    points: [],
+    rad: 0,
+    distance: 0,
+    isActive: false,
+  };
+  private transform(points: IGesturePoint[], rotate: number, scale: number) {
+    const afterRotatePoint = Gesture.afterRotate(
+      this.startPoints.points[0] || points[0],
+      this.transformOrigin,
+      rotate,
+      scale
+    );
+    this.transformRes.translateX = points[0].x - afterRotatePoint.x + this.preEndTransformRes.translateX;
+    this.transformRes.translateY = points[0].y - afterRotatePoint.y + this.preEndTransformRes.translateY;
+    this.transformRes.rotate = rotate + this.preEndTransformRes.rotate;
+    this.transformRes.scale = this.preEndTransformRes.scale * scale;
+    this.transformRes.transformText = `translate3d(${this.transformRes.translateX}px, ${this.transformRes.translateY}px,0) rotate3d(0, 0, 1,${this.transformRes.rotate}rad) scale3d(${this.transformRes.scale},${this.transformRes.scale},${this.transformRes.scale})`;
+    this.onTransform(this.transformRes);
+  }
+  private onMove(ev: TouchEvent | MouseEvent) {
+    ev.preventDefault();
+    const ponits = Gesture.getPonits(ev);
+    if (ponits.length < 1) return;
+    const isSingleFinger = ponits.length === 1;
+    const newRad = isSingleFinger ? this.startPoints.rad : Gesture.getRad(ponits[0], ponits[1]);
+    const newScale = isSingleFinger ? this.startPoints.distance : Gesture.getDistance(ponits[0], ponits[1]);
+    return this.transform(ponits, newRad - this.startPoints.rad, newScale / this.startPoints.distance);
+  }
+  private onEnd(ev: TouchEvent | MouseEvent) {
+    ev.preventDefault();
+    for (const k in this.transformRes) {
+      this.preEndTransformRes[k] = this.transformRes[k];
+    }
+    this.transformOrigin.x = this.transformRes.translateX;
+    this.transformOrigin.y = this.transformRes.translateY;
+    const points = Gesture.getPonits(ev);
+    this.startPoints.points = points;
+    this.startPoints.rad = 0;
+    this.startPoints.distance = 1;
+    if (points.length >= 2) {
+      this.startPoints.rad = Gesture.getRad(points[0], points[1]);
+      this.startPoints.distance = Gesture.getDistance(points[0], points[1]);
+    } else if (points.length === 0 || ev.type === "mouseup") {
+      this.removeAllListener();
+    }
+  }
+  private onScale(ev: WheelEvent | MouseEvent) {
+    const ponits = Gesture.getPonits(ev);
+    if (ev instanceof WheelEvent) this.onEnd(ev);
+    this.transform(ponits, 0, (ev["wheelDeltaY"] || 0) < 0 ? 0.7 : 1.5);
+  }
 
-    }
-    public ontouchstart({ touches }: TouchEvent) {
-        return this.onstart([...touches].map(({ clientX, clientY }) => ({ x: clientX, y: clientY })))
-    }
-    private rad = 0;
-    private distance = 0;
-    public transformRes = {
-        translateX: 0,
-        transformY: 0,
-        rotate: 0,
-        scale: 1,
-        transformText: ``
-    }
-    public transformOrigin = { x: 0, y: 0 }
-    public onstart(pointStartPositions: IGesturePoint[]) {
-        if (!pointStartPositions[1]) return
-        this.rad = Gesture.getRad(pointStartPositions[0], pointStartPositions[1]);
-        this.distance = Gesture.getDistance(pointStartPositions[0], pointStartPositions[1]);
-        document.body.ontouchmove = ({ touches }) => {
-            if (!touches[1]) return
-            const pointEndPositions = [...touches].map(({ clientX, clientY }) => ({ x: clientX, y: clientY }))
-            const newRad = Gesture.getRad(pointEndPositions[0], pointEndPositions[1])
-            const rotate = newRad - this.rad;
-            const scale = Gesture.getDistance(pointEndPositions[0], pointEndPositions[1]) / this.distance
-            const afterRotatePoint = Gesture.afterRotate(pointStartPositions[0], this.transformOrigin, rotate, scale)
-            const translateX = pointEndPositions[0].x - afterRotatePoint.x
-            const transformY = pointEndPositions[0].y - afterRotatePoint.y
-            this.transformRes.translateX = translateX;
-            this.transformRes.transformY = transformY;
-            this.transformRes.rotate = rotate;
-            this.transformRes.scale = scale;
-            this.transformRes.transformText = `translate3d(${translateX}px, ${transformY}px,0) rotate3d(0, 0, 1,${rotate}rad) scale3d(${scale},${scale},${scale})`
-            this.onTransform()
-        }
-    }
-    public onTransform = () => { }
+  private onStart(ev: TouchEvent | MouseEvent) {
+    this.onEnd(ev);
+    this.removeAllListener();
+    this.addAllListener();
+  }
 
-    /** 获取两点组成的线段的弧度 */
-    public static getRad = (p1: IGesturePoint, p2: IGesturePoint) => Math.atan2((p2.y - p1.y), (p2.x - p1.x))
-    /** 两点间距离 */
-    public static getDistance = (p1: IGesturePoint, p2: IGesturePoint) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
-    /** 旋转后的新坐标 */
-    public static afterRotate = (p: IGesturePoint, origin: IGesturePoint, rad: number, scale: number): IGesturePoint => {
-        const x = p.x - origin.x;
-        const y = p.y - origin.y;
-        /** 参考：https://blog.csdn.net/weixin_34910922/article/details/121569340 */
-        return {
-            x: (Math.cos(rad) * x - Math.sin(rad) * y) * scale + origin.x,
-            y: (Math.sin(rad) * x + Math.cos(rad) * y) * scale + origin.y,
-        }
+  private addAllListener() {
+    window.addEventListener("touchmove", this.onMoveListener, false);
+    window.addEventListener("mousemove", this.onMoveListener, false);
+    window.addEventListener("touchend", this.onEndListener, false);
+    window.addEventListener("mouseup", this.onEndListener, false);
+  }
+
+  private removeAllListener() {
+    window.removeEventListener("touchmove", this.onMoveListener, false);
+    window.removeEventListener("mousemove", this.onMoveListener, false);
+    window.removeEventListener("touchend", this.onEndListener, false);
+    window.removeEventListener("mouseup", this.onEndListener, false);
+  }
+
+  public onStartListener: (ev: TouchEvent | MouseEvent) => void;
+  private onMoveListener: (ev: TouchEvent | MouseEvent) => void;
+  private onEndListener: (ev: TouchEvent | MouseEvent) => void;
+  public onScaleListener: (ev: WheelEvent | MouseEvent) => void;
+  public onTransform = (transformRes: IGestureTransformRes): void => {};
+
+  /** 从原生事件里获取坐标 */
+  public static getPonits(ev: TouchEvent | MouseEvent): IGesturePoint[] {
+    const out: IGesturePoint[] = [];
+    if (ev instanceof TouchEvent) {
+      for (const { clientX, clientY } of ev.touches) {
+        out.push({ x: clientX, y: clientY });
+      }
+    } else {
+      out.push({ x: ev.clientX, y: ev.clientY });
     }
+    return out;
+  }
+  /** 获取两点组成的线段的弧度 */
+  public static getRad = (p1: IGesturePoint, p2: IGesturePoint) => Math.atan2(p2.y - p1.y, p2.x - p1.x);
+  /** 两点间距离 */
+  public static getDistance = (p1: IGesturePoint, p2: IGesturePoint) =>
+    Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+  /** 旋转后的新坐标 */
+  public static afterRotate = (p: IGesturePoint, origin: IGesturePoint, rad: number, scale: number): IGesturePoint => {
+    const x = p.x - origin.x;
+    const y = p.y - origin.y;
+    /** 参考：https://blog.csdn.net/weixin_34910922/article/details/121569340 */
+    return {
+      x: (Math.cos(rad) * x - Math.sin(rad) * y) * scale + origin.x,
+      y: (Math.sin(rad) * x + Math.cos(rad) * y) * scale + origin.y,
+    };
+  };
 }
 
-const gesture = new Gesture();
-const img = new Image();
-img.src = "https://t7.baidu.com/it/u=2621658848,3952322712&fm=193";
+/** 测试用例 */
+// const img = new Image();
+// img.src = "https://t7.baidu.com/it/u=2621658848,3952322712&fm=193";
+// img.onload = () => {
+//   img.style.transformOrigin = `0px 0px`;
+//   img.style.position = "fixed";
+//   img.style.left = "0";
+//   img.style.top = "0";
+//   document.body.appendChild(img);
 
-img.onload = () => {
-    img.style.transformOrigin = `0px 0px`;
-    img.style.position = "fixed";
-    img.style.left = "0";
-    img.style.top = "0"
-    document.body.appendChild(img);
-    document.body.ontouchstart = gesture.ontouchstart.bind(gesture)
-    gesture.onTransform = () => {
-        img.style.transform = gesture.transformRes.transformText
-    }
-}
+//   const gesture = new Gesture({ x: 100, y: 100 });
+//   img.addEventListener("touchstart", gesture.onStartListener, false);
+//   img.addEventListener("mousedown", gesture.onStartListener, false);
+//   img.addEventListener("wheel", gesture.onScaleListener, false);
+//   img.addEventListener("dblclick", gesture.onScaleListener, false);
+//   gesture.onTransform = ({ transformText }) => {
+//     img.style.transform = transformText;
+//   };
+// };
