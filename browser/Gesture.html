@@ -202,13 +202,14 @@
     const img = new Image();
     img.src = "https://t7.baidu.com/it/u=2621658848,3952322712&fm=193";
     img.onload = () => {
-      img.style.transformOrigin = `0px 0px`;
+      const origin = { x: 100, y: 100 };
+      img.style.transformOrigin = `${origin.x}px ${origin.y}px`;
       img.style.position = "fixed";
       img.style.left = "0";
       img.style.top = "0";
       document.body.appendChild(img);
 
-      const gesture = new Gesture({ x: 100, y: 100 });
+      const gesture = new Gesture(origin);
       img.addEventListener("touchstart", gesture.onStartListener, false);
       img.addEventListener("mousedown", gesture.onStartListener, false);
       img.addEventListener("wheel", gesture.onScaleListener, false);

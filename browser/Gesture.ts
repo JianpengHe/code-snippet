@@ -36,12 +36,7 @@ export class Gesture {
     isActive: false,
   };
   private transform(points: IGesturePoint[], rotate: number, scale: number) {
-    const afterRotatePoint = Gesture.afterRotate(
-      this.startPoints.points[0] || points[0],
-      this.transformOrigin,
-      rotate,
-      scale
-    );
+    const afterRotatePoint = this.afterRotate(this.startPoints.points[0] || points[0], rotate, scale);
     this.transformRes.translateX = points[0].x - afterRotatePoint.x + this.preEndTransformRes.translateX;
     this.transformRes.translateY = points[0].y - afterRotatePoint.y + this.preEndTransformRes.translateY;
     this.transformRes.rotate = rotate + this.preEndTransformRes.rotate;
@@ -63,8 +58,6 @@ export class Gesture {
     for (const k in this.transformRes) {
       this.preEndTransformRes[k] = this.transformRes[k];
     }
-    this.transformOrigin.x = this.transformRes.translateX;
-    this.transformOrigin.y = this.transformRes.translateY;
     const points = Gesture.getPonits(ev);
     this.startPoints.points = points;
     this.startPoints.rad = 0;
@@ -126,28 +119,29 @@ export class Gesture {
   public static getDistance = (p1: IGesturePoint, p2: IGesturePoint) =>
     Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
   /** 旋转后的新坐标 */
-  public static afterRotate = (p: IGesturePoint, origin: IGesturePoint, rad: number, scale: number): IGesturePoint => {
-    const x = p.x - origin.x;
-    const y = p.y - origin.y;
+  public afterRotate(p: IGesturePoint, rad: number, scale: number): IGesturePoint {
+    const x = p.x - this.transformOrigin.x - this.preEndTransformRes.translateX;
+    const y = p.y - this.transformOrigin.y - this.preEndTransformRes.translateY;
     /** 参考：https://blog.csdn.net/weixin_34910922/article/details/121569340 */
     return {
-      x: (Math.cos(rad) * x - Math.sin(rad) * y) * scale + origin.x,
-      y: (Math.sin(rad) * x + Math.cos(rad) * y) * scale + origin.y,
+      x: (Math.cos(rad) * x - Math.sin(rad) * y) * scale + this.transformOrigin.x + this.preEndTransformRes.translateX,
+      y: (Math.sin(rad) * x + Math.cos(rad) * y) * scale + this.transformOrigin.y + this.preEndTransformRes.translateY,
     };
-  };
+  }
 }
 
 /** 测试用例 */
 // const img = new Image();
 // img.src = "https://t7.baidu.com/it/u=2621658848,3952322712&fm=193";
 // img.onload = () => {
-//   img.style.transformOrigin = `0px 0px`;
+//   const origin = { x: 100, y: 100 };
+//   img.style.transformOrigin = `${origin.x}px ${origin.y}px`;
 //   img.style.position = "fixed";
 //   img.style.left = "0";
 //   img.style.top = "0";
 //   document.body.appendChild(img);
 
-//   const gesture = new Gesture({ x: 100, y: 100 });
+//   const gesture = new Gesture(origin);
 //   img.addEventListener("touchstart", gesture.onStartListener, false);
 //   img.addEventListener("mousedown", gesture.onStartListener, false);
 //   img.addEventListener("wheel", gesture.onScaleListener, false);
