@@ -35,6 +35,7 @@ export class Gesture {
     distance: 0,
     isActive: false,
   };
+  private lastClickPoint: IGesturePoint & { expire: number; type: string } = { x: 0, y: 0, expire: 0, type: "" };
   private transform(points: IGesturePoint[], rotate: number, scale: number) {
     const afterRotatePoint = this.afterRotate(this.startPoints.points[0] || points[0], rotate, scale);
     this.transformRes.translateX = points[0].x - afterRotatePoint.x + this.preEndTransformRes.translateX;
@@ -46,7 +47,7 @@ export class Gesture {
   }
   private onMove(ev: TouchEvent | MouseEvent) {
     ev.preventDefault();
-    const ponits = Gesture.getPonits(ev);
+    const ponits = this.getPonits(ev);
     if (ponits.length < 1) return;
     const isSingleFinger = ponits.length === 1;
     const newRad = isSingleFinger ? this.startPoints.rad : Gesture.getRad(ponits[0], ponits[1]);
@@ -58,24 +59,45 @@ export class Gesture {
     for (const k in this.transformRes) {
       this.preEndTransformRes[k] = this.transformRes[k];
     }
-    const points = Gesture.getPonits(ev);
+    const points = this.getPonits(ev);
     this.startPoints.points = points;
     this.startPoints.rad = 0;
     this.startPoints.distance = 1;
     if (points.length >= 2) {
       this.startPoints.rad = Gesture.getRad(points[0], points[1]);
       this.startPoints.distance = Gesture.getDistance(points[0], points[1]);
-    } else if (points.length === 0 || ev.type === "mouseup") {
+    }
+    if (ev.type === "mouseup" || (ev.type === "touchend" && this.getPonits(ev, true).length === 0)) {
       this.removeAllListener();
+      const now = performance.now();
+      if (now > this.lastClickPoint.expire || this.lastClickPoint.type === "firstPoint") {
+        this.lastClickPoint.expire = 0;
+        this.lastClickPoint.type = "";
+      } else {
+        this.lastClickPoint.expire = now + 300;
+        this.lastClickPoint.type = "firstPoint";
+      }
     }
   }
   private onScale(ev: WheelEvent | MouseEvent) {
-    const ponits = Gesture.getPonits(ev);
+    const ponits = this.getPonits(ev);
     if (ev instanceof WheelEvent) this.onEnd(ev);
     this.transform(ponits, 0, (ev["wheelDeltaY"] || 0) < 0 ? 0.7 : 1.5);
   }
 
   private onStart(ev: TouchEvent | MouseEvent) {
+    const points = this.getPonits(ev);
+    if (points.length === 1) {
+      const now = performance.now();
+      if (now > this.lastClickPoint.expire || this.lastClickPoint.type === "") {
+        this.lastClickPoint.x = points[0].x;
+        this.lastClickPoint.y = points[0].y;
+        this.lastClickPoint.expire = now + 300;
+        this.lastClickPoint.type = "start";
+      } else {
+        this.lastClickPoint.expire = Infinity;
+      }
+    }
     this.onEnd(ev);
     this.removeAllListener();
     this.addAllListener();
@@ -102,7 +124,7 @@ export class Gesture {
   public onTransform = (transformRes: IGestureTransformRes): void => {};
 
   /** 从原生事件里获取坐标 */
-  public static getPonits(ev: TouchEvent | MouseEvent): IGesturePoint[] {
+  public getPonits(ev: TouchEvent | MouseEvent, getRaw = false): IGesturePoint[] {
     const out: IGesturePoint[] = [];
     if (ev instanceof TouchEvent) {
       for (const { clientX, clientY } of ev.touches) {
@@ -110,6 +132,9 @@ export class Gesture {
       }
     } else {
       out.push({ x: ev.clientX, y: ev.clientY });
+    }
+    if (!getRaw && out.length === 1 && this.lastClickPoint.expire === Infinity) {
+      out.unshift({ x: this.lastClickPoint.x, y: this.lastClickPoint.y });
     }
     return out;
   }
