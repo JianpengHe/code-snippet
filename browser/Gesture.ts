@@ -45,7 +45,7 @@ export class Gesture {
   }
   private onMove(ev: TouchEvent | MouseEvent) {
     if (this.disable) return;
-    ev.preventDefault();
+    //ev.preventDefault();
     const points = this.getPonits(ev);
     if (points.length < 1) return;
     const isSingleFinger = points.length === 1;
@@ -59,7 +59,7 @@ export class Gesture {
   }
   private onGestureEndTimer = 0;
   private onEnd(ev: TouchEvent | MouseEvent) {
-    ev.preventDefault();
+    //ev.preventDefault();
     for (const k in this.transformRes) {
       this.preEndTransformRes[k] = this.transformRes[k];
     }
