@@ -1,19 +1,19 @@
 lockfileVersion: 5.4
 
 specifiers:
-  '@types/node': ^20.1.0
+  '@types/node': ^20.3.1
   prettier: ^2.8.8
   typescript: ^5.0.4
 
 devDependencies:
-  '@types/node': 20.1.0
+  '@types/node': 20.3.1
   prettier: 2.8.8
   typescript: 5.0.4
 
 packages:
 
-  /@types/node/20.1.0:
-    resolution: {integrity: sha512-O+z53uwx64xY7D6roOi4+jApDGFg0qn6WHcxe5QeqjMaTezBO/mxdfFXIVAVVyNWKx84OmPB3L8kbVYOTeN34A==}
+  /@types/node/20.3.1:
+    resolution: {integrity: sha512-EhcH/wvidPy1WeML3TtYFGR83UzjxeWRen9V402T8aUGYsCHOmfoisV3ZSg03gAFIbLq8TnWOJ0f4cALtnSEUg==}
     dev: true
 
   /prettier/2.8.8:
