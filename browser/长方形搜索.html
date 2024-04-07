@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+  </head>
+  <body>
+    <div style="z-index: 9999; position: fixed">
+      <div
+        id="box"
+        style="
+          border: 0px solid rgb(0, 0, 0);
+          margin: 200px;
+          width: 300px;
+          height: 300px;
+          /** display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;**/
+        "
+      ></div>
+    </div>
+    <script>
+      const w = 16 * 4,
+        h = 9 * 4;
+      const W = 300,
+        H = 300;
+
+      const walk = (nowPos = { x: 0, y: 0 }) =>
+        (function* () {
+          const direction = [
+            { axis: "x", change: 1, until: 0 }, //   →
+            { axis: "y", change: 1, until: 0 }, //   ↓
+            { axis: "x", change: -1, until: 0 }, //  ←
+            { axis: "y", change: -1, until: 0 }, //  ↑
+          ];
+          const getWidth = () => (direction[0].until - direction[2].until + 1) * w;
+          const getHeight = () => (direction[1].until - direction[3].until + 1) * h;
+          const getRatio = (width, height) => Math.abs(1 - width / height);
+          //     yield { ...nowPos, axis, change, until };;
+          while (1) {
+            /** 计算四周边界 */
+            for (const obj of direction) {
+              obj.until += obj.change;
+            }
+            nowPos.x--;
+            nowPos.y--;
+
+            /** 走四周 */
+            for (const { axis, change, until } of direction) {
+              while (nowPos[axis] !== until) {
+                nowPos[axis] += change;
+                yield { ...nowPos, axis, change, until };
+              }
+            }
+            /** 胖瘦判断 */
+            let width = getWidth();
+            let height = getHeight();
+            /** 越小越接近正方形 */
+            let ratio = getRatio(width, height);
+            if (ratio === 0) {
+              /** 正方形 */
+              continue;
+            }
+            if (width > height) {
+              while (getRatio(width, height + 2 * h) < ratio) {
+                // console.log("todo →");
+                // debugger;
+                if (1) {
+                  /** 起始位置 */
+                  nowPos.y = direction[3].until += direction[3].change;
+                  const { axis, change, until } = direction[0];
+                  yield { ...nowPos, axis, change, until };
+                  while (nowPos[axis] !== until) {
+                    nowPos[axis] += change;
+                    yield { ...nowPos, axis, change, until };
+                  }
+                }
+                // console.log("todo ←");
+                if (1) {
+                  nowPos.y = direction[1].until += direction[1].change;
+                  const { axis, change, until } = direction[2];
+                  yield { ...nowPos, axis, change, until };
+                  while (nowPos[axis] !== until) {
+                    nowPos[axis] += change;
+                    yield { ...nowPos, axis, change, until };
+                  }
+                }
+                height = getHeight();
+                // console.log(width, height, ratio, getRatio(width, height));
+                ratio = getRatio(width, height);
+                /** 现在在右下角，要修复y坐标 */
+                nowPos.y = direction[3].until;
+              }
+            } else {
+              while (getRatio(width + 2 * w, height) < ratio) {
+                // console.log("todo ↓");
+                if (1) {
+                  /** 起始位置 */
+                  nowPos.x = direction[0].until += direction[0].change;
+                  const { axis, change, until } = direction[1];
+                  yield { ...nowPos, axis, change, until };
+                  while (nowPos[axis] !== until) {
+                    nowPos[axis] += change;
+                    yield { ...nowPos, axis, change, until };
+                  }
+                }
+                // console.log("todo ↑");
+                if (1) {
+                  nowPos.x = direction[2].until += direction[2].change;
+                  const { axis, change, until } = direction[3];
+                  yield { ...nowPos, axis, change, until };
+                  while (nowPos[axis] !== until) {
+                    nowPos[axis] += change;
+                    yield { ...nowPos, axis, change, until };
+                  }
+                }
+                width = getWidth();
+                // console.log(width, height, ratio, getRatio(width, height));
+                ratio = getRatio(width, height);
+                /** 已经回到左上角，不用修复 */
+                //    nowPos.x = direction[0].until;
+              }
+            }
+          }
+        })();
+
+      const div = document.getElementById("box");
+      div.style.width = W + "px";
+      div.style.height = H + "px";
+      const main = document.createElement("div");
+      main.style.transition = "transform 0.3s";
+      main.style.width = main.style.height = "0px";
+      div.appendChild(main);
+
+      const side = {
+        minX: Infinity,
+        minY: Infinity,
+        maxX: -Infinity,
+        maxY: -Infinity,
+      };
+      const scale = () => {
+        const width = (side.maxX - side.minX + 1) * w;
+        const height = (side.maxY - side.minY + 1) * h;
+        const scale = Math.min(1, W / (width + w), H / (height + h));
+        main.style.transform = `translate(${W / 2 - ((side.maxX + side.minX) / 2) * w * scale}px,${
+          H / 2 - ((side.maxY + side.minY) / 2) * h * scale
+        }px) scale(${scale})`;
+      };
+      const write = (pos = { x: 0, y: 0 }, text = "", backgroundColor = "#000") => {
+        const div = document.createElement("div");
+        div.style.width = w + "px";
+        div.style.height = h + "px";
+        //  div.style.margin = `-${h}px -${w}px`;
+        div.style.position = "absolute";
+        div.style.left = 0;
+        div.style.top = 0;
+        div.style.transform = `translate(${pos.x * w - w / 2}px, ${pos.y * h - h / 2}px)`;
+        if (text) {
+          div.style.lineHeight = h + "px";
+          div.style.textAlign = "center";
+          div.style.background = backgroundColor;
+          div.style.color = "#fff";
+          div.innerHTML = text;
+        }
+        main.appendChild(div);
+        if (pos.x < side.minX) {
+          side.minX = pos.x;
+          scale();
+        }
+        if (pos.y < side.minY) {
+          side.minY = pos.y;
+          scale();
+        }
+        if (pos.x > side.maxX) {
+          side.maxX = pos.x;
+          scale();
+        }
+        if (pos.y > side.maxY) {
+          side.maxY = pos.y;
+          scale();
+        }
+      };
+
+      (async () => {
+        let i = 1;
+        const side = {
+          minX: -Infinity,
+          minY: -Infinity,
+          maxX: Infinity,
+          maxY: Infinity,
+        };
+        let banTimes = 0;
+        const check = (x, y) => {
+          if (x > 3) {
+            side.maxX = x;
+            return false;
+          }
+          if (y > 4) {
+            side.maxY = y;
+            return false;
+          }
+          if (x < -10) {
+            side.minX = x;
+            return false;
+          }
+          if (y < -15) {
+            side.minY = y;
+            return false;
+          }
+          return true;
+        };
+        const errCodeSet = new Set();
+        write({ x: 0, y: 0 }, "您的位置", "red");
+        for (const pos of walk()) {
+          //  await new Promise(r => setTimeout(r, 10));
+          if (pos.x >= side.maxX || pos.x <= side.minX || pos.y >= side.maxY || pos.y <= side.minY) {
+            continue;
+          }
+          if (!check(pos.x, pos.y)) {
+            if (++banTimes >= 4) {
+              break;
+            }
+            continue;
+          }
+          write(pos, String(i++), "#000");
+          await new Promise(r => setTimeout(r, 20));
+          // if (i > 508) {
+          //   break;
+          // }
+        }
+      })();
+    </script>
+  </body>
+</html>

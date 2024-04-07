@@ -5,3 +5,5 @@
 *.d.ts
 *.map
 *.tsbuildinfo
+*.error.log
+*.js

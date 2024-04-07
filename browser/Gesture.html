@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en" style="touch-action: none">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="initial-scale=1.0,minimum-scale=1.0,maximum-scale=1.0,user-scalable=no" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+    <meta name="screen-orientation" content="portrait" />
+    <meta name="x5-orientation" content="portrait" />
+    <meta name="renderer" content="webkit" />
+    <title>Document</title>
+    <style>
+      body {
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        margin: 0;
+      }
+
+      .point {
+        --size: 10px;
+        width: var(--size);
+        height: var(--size);
+        border-radius: 50%;
+        position: fixed;
+        z-index: 100;
+        top: calc(var(--size) / -2);
+        left: calc(var(--size) / -2);
+        display: none;
+        transform: translate(0, 0);
+        /* transition: all 0.5s linear; */
+      }
+
+      #tips {
+        position: fixed;
+        bottom: 0;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="tips"></div>
+    <div class="point" style="background-color: red"></div>
+    <div class="point" style="background-color: blue"></div>
+  </body>
+  <script>
+    var exports = {};
+  </script>
+  <script src="Gesture.js"></script>
+  <script>
+    0 &&
+      (() => {
+        const transformOrigin = { x: 0, y: 0 };
+        let pointStartPositions = [
+          { x: 410, y: 370 },
+          { x: 890, y: 410 },
+        ];
+        const ponits = [...document.getElementsByClassName("point")];
+        const drawPonits = ponitArr => {
+          console.log(ponitArr);
+          ponitArr.forEach(({ x, y }, i) => {
+            if (i > 1) return;
+            ponits[i].style.transform = `translate(${x}px, ${y}px)`;
+            ponits[i].style.display = "unset";
+          });
+        };
+        const getPonits = ev => [...ev.touches].map(({ clientX, clientY }) => ({ x: clientX, y: clientY }));
+        let pre = {
+          translateX: 0,
+          translateY: 0,
+          rotate: 0,
+          scale: 1,
+          transformText: ``,
+        };
+        let lastF = {
+          translateX: 0,
+          translateY: 0,
+          rotate: 0,
+          scale: 1,
+          transformText: ``,
+        };
+        const getRad = (p1, p2) => Math.atan2(p2.y - p1.y, p2.x - p1.x);
+        /** 两点间距离 */
+        const getDistance = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        /** 旋转后的新坐标 */
+        const afterRotate = (p, origin, rad, scale) => {
+          const x = p.x - origin.x;
+          const y = p.y - origin.y;
+          /** 参考：https://blog.csdn.net/weixin_34910922/article/details/121569340 */
+          return {
+            x: (Math.cos(rad) * x - Math.sin(rad) * y) * scale + origin.x,
+            y: (Math.sin(rad) * x + Math.cos(rad) * y) * scale + origin.y,
+          };
+        };
+        const img = new Image();
+        img.src = "https://t7.baidu.com/it/u=2621658848,3952322712&fm=193";
+        //   img.style.transition = "all 0.5s linear";
+        img.style.transformOrigin = `${transformOrigin.x}px ${transformOrigin.y}px`;
+        img.onload = () => {
+          drawPonits(pointStartPositions);
+          document.body.appendChild(img);
+          //   setTimeout(() => {
+          //     //img.style.transform = `rotate(${rad}rad)`
+          //     // go([pointStartPositions[0], { x: Math.random() * img.width, y: Math.random() * img.height }])
+          //     //go([pointStartPositions[0], { x: 600, y: 600 }])
+          //     // go([
+          //     //   { x: 400, y: 400 },
+          //     //   { x: 600, y: 600 },
+          //     // ]);
+          //     go([
+          //       { x: Math.random() * img.width, y: Math.random() * img.height },
+          //       { x: Math.random() * img.width, y: Math.random() * img.height },
+          //     ]);
+          //   }, 1000);
+          document.addEventListener(
+            "touchstart",
+            function (ev) {
+              if (!ev.touches[1]) return;
+              pointStartPositions = getPonits(ev);
+
+              drawPonits(pointStartPositions);
+              const ontouchmove = ev => {
+                if (!ev.touches[1]) return;
+                go(getPonits(ev));
+              };
+              const ontouchend = ev => {
+                // console.log(ev.touches);
+                window.removeEventListener("touchmove", ontouchmove, false);
+                window.removeEventListener("touchend", ontouchend, false);
+                // pre = go(getPonits(ev));
+                pre = lastF;
+                transformOrigin.x = pre.translateX;
+                transformOrigin.y = pre.translateY;
+              };
+              window.addEventListener("touchmove", ontouchmove, false);
+              window.addEventListener("touchend", ontouchend, false);
+            },
+            false
+          );
+        };
+        const jisuan = (newPonits, startPonits, lastEnd) => {
+          const rad = getRad(startPonits[0], startPonits[1]);
+          const distance = getDistance(startPonits[0], startPonits[1]);
+
+          const newRad = getRad(newPonits[0], newPonits[1]);
+          const rotate = newRad - rad + pre.rotate;
+          const scale = (pre.scale * getDistance(newPonits[0], newPonits[1])) / distance;
+          const afterRotatePoint = afterRotate(startPonits[0], transformOrigin, rotate - pre.rotate, scale / pre.scale);
+          const translateX = newPonits[0].x - afterRotatePoint.x + pre.translateX;
+          const translateY = newPonits[0].y - afterRotatePoint.y + pre.translateY;
+
+          return {
+            translateX,
+            translateY,
+            rotate,
+            scale,
+            transformText: `translate3d(${translateX}px, ${translateY}px,0) rotate3d(0, 0, 1,${rotate}rad) scale3d(${scale},${scale},${scale})`,
+          };
+        };
+        // let t = 10;
+        const go = pointEndPositions => {
+          //  t++;
+          drawPonits(pointEndPositions);
+          lastF = jisuan(pointEndPositions, pointStartPositions, pre);
+          img.style.transform = lastF.transformText;
+          return lastF;
+          //   if (t > 1) return;
+          //   setTimeout(() => {
+          //     pointStartPositions = [
+          //       { x: Math.random() * img.width, y: Math.random() * img.height },
+          //       { x: Math.random() * img.width, y: Math.random() * img.height },
+          //     ];
+          //     //  [
+          //     //   { x: 300, y: 300 },
+          //     //   { x: 550, y: 400 },
+          //     // ];
+          //     pointStartPositions.forEach(({ x, y }, i) => {
+          //       ponits[i].style.transition = "unset";
+          //     });
+          //     drawPonits(pointStartPositions);
+          //   }, 1000);
+          //   setTimeout(() => {
+          //     pointStartPositions.forEach(({ x, y }, i) => {
+          //       ponits[i].style.transition = "";
+          //     });
+          //     // go([
+          //     //   { x: 400, y: 400 },
+          //     //   { x: 650, y: 750 },
+          //     // ]);
+          //     go([
+          //       { x: Math.random() * img.width, y: Math.random() * img.height },
+          //       { x: Math.random() * img.width, y: Math.random() * img.height },
+          //     ]);
+          //   }, 2000);
+
+          //   return pre;
+          // console.log(rotate, rotate * 180 / Math.PI)
+          // const sit=getRad(pointStartPositions[0], pointStartPositions[1])
+
+          // ponits[1].style.transform = `translate(${x}px, ${y}px)`;
+        };
+      })();
+    const img = new Image();
+    img.src = "https://t7.baidu.com/it/u=2621658848,3952322712&fm=193";
+    img.onload = () => {
+      const origin = { x: 100, y: 100 };
+      img.style.transformOrigin = `${origin.x}px ${origin.y}px`;
+      img.style.position = "fixed";
+      img.style.left = "0";
+      img.style.top = "0";
+      document.body.appendChild(img);
+
+      const gesture = new Gesture(origin);
+      img.addEventListener("touchstart", gesture.onStartListener, false);
+      img.addEventListener("mousedown", gesture.onStartListener, false);
+      img.addEventListener("wheel", gesture.onScaleListener, false);
+      img.addEventListener("dblclick", gesture.onScaleListener, false);
+      gesture.onTransform = ({ transformText }) => {
+        img.style.transform = transformText;
+      };
+      gesture.beforeTransform = obj => {
+        // obj.rotate = 0;
+      };
+      gesture.onGestureEnd = (transformRes, startPoints) => {
+        console.log("onGestureEnd");
+        /** 限制旋转角度 */
+        let rotate = transformRes.rotate / (Math.PI / 2);
+        rotate = Math.round(rotate) * (Math.PI / 2) - transformRes.rotate;
+
+        /** 限制最大缩放 */
+        let scale = 1;
+        if (transformRes.scale > 3) {
+          scale = 3 / transformRes.scale;
+        } else if (transformRes.scale < 0.3) {
+          scale = 0.3 / transformRes.scale;
+        }
+        if (rotate || scale !== 1) {
+          img.style.transition = "transform 0.2s";
+          gesture.disable = true;
+          gesture.transform({ points: startPoints.points, scale, rotate });
+        }
+      };
+      img.ontransitionend = () => {
+        img.style.transition = "";
+        gesture.disable = false;
+      };
+    };
+
+    // window.onmousemove = ({ x, y }) => {
+    //     const a = getRad(pointStartPositions[0], { x, y })
+    //     document.getElementById("tips").innerHTML = (a * 180 / Math.PI)
+    // }
+  </script>
+</html>
