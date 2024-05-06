@@ -79,8 +79,8 @@
     "inlineSources": true,
 
     // experimentalDecorators用于指定是否启用实验性的装饰器特性
-    "experimentalDecorators": true
-
+    "experimentalDecorators": true,
+    "skipLibCheck": true
     // emitDecoratorMetadata用于指定是否为装上去提供元数据支持，关于元数据，也是ES6的新标准，可以通过Reflect提供的静态方法获取元数据，如果需要使用Reflect的一些方法，需要引用ES2015.Reflect这个库
     // "emitDecoratorMetadata": true
   }
