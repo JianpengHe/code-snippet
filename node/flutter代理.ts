@@ -28,3 +28,15 @@ tcpProxy.add({
       sock2.on("error", e => console.log(e));
     }),
 });
+tcpProxy.add({
+  host: "objects.githubusercontent.com",
+  port,
+  connectionListener: sock =>
+    socks5({ host: "objects.githubusercontent.com", port }).then(sock2 => {
+      console.log("代理", "objects.githubusercontent.com", port);
+      sock.pipe(sock2);
+      sock2.pipe(sock);
+      sock.on("error", e => console.log(e));
+      sock2.on("error", e => console.log(e));
+    }),
+});
