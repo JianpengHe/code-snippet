@@ -4,6 +4,7 @@
   // 不编译某些文件
   "exclude": ["*.js", "*.d.ts", "node_modules"],
   "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
     // 只编译修改过的文件,这个时候会生成tsconfig.tsbuildinfo,下次编译的时候会进行对比只编译修改过的文件
     "incremental": true,
     // 指定 ECMAScript 目标版本: 'ES3' (default), 'ES5', 'ES2015', 'ES2016', 'ES2017', or 'ESNEXT'
@@ -21,7 +22,7 @@
     // 指定 jsx 代码的生成: 'preserve', 'react-native', or 'react'
     /* 如果设为true，编译每个ts文件之后会生成一个js文件和一个声明文件,
       declaration和allowJs不能同时设为true */
-    "declaration": true,
+    "declaration": false,
     // 值为true或false，指定是否为声明文件.d.ts生成map文件
     "declarationMap": false,
     // 用来指定编译时是否生成.map文件
@@ -79,8 +80,8 @@
     "inlineSources": true,
 
     // experimentalDecorators用于指定是否启用实验性的装饰器特性
-    "experimentalDecorators": true
-
+    "experimentalDecorators": true,
+    "skipLibCheck": true
     // emitDecoratorMetadata用于指定是否为装上去提供元数据支持，关于元数据，也是ES6的新标准，可以通过Reflect提供的静态方法获取元数据，如果需要使用Reflect的一些方法，需要引用ES2015.Reflect这个库
     // "emitDecoratorMetadata": true
   }
