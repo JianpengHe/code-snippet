@@ -1,9 +1,4 @@
-type IEventList = {
-  run: (id: number) => void;
-  jump: (msg: string, times: number) => void;
-};
-
-class MyEvent<EventList extends Record<string, (...args: any) => void>> {
+export class MyEvent<EventList extends Record<string, (...args: any) => void>> {
   /** 监听器池 */
   private eventListenerMap: Map<keyof EventList, Set<EventList[keyof EventList]>> = new Map();
 
@@ -50,31 +45,36 @@ class MyEvent<EventList extends Record<string, (...args: any) => void>> {
   }
 }
 
-const myEvent = new MyEvent<IEventList>();
+// 测试用例
+// type IEventList = {
+//   run: (id: number) => void;
+//   jump: (msg: string, times: number) => void;
+// };
+// const myEvent = new MyEvent<IEventList>();
 
-myEvent.on("run", id => {
-  console.log("on run", id);
-});
+// myEvent.on("run", id => {
+//   console.log("on run", id);
+// });
 
-myEvent.once("run", id => {
-  console.log("once run", id);
-});
+// myEvent.once("run", id => {
+//   console.log("once run", id);
+// });
 
-const callback = (msg, times) => {
-  console.log("on jump", msg, times);
-};
-myEvent.on("jump", callback);
-myEvent.on("jump", (msg, times) => {
-  console.log("on jump2", msg, times);
-});
+// const callback = (msg, times) => {
+//   console.log("on jump", msg, times);
+// };
+// myEvent.on("jump", callback);
+// myEvent.on("jump", (msg, times) => {
+//   console.log("on jump2", msg, times);
+// });
 
-myEvent.emit("run", 1);
-myEvent.emit("jump", "ok", 4);
-setTimeout(() => {
-  myEvent.off("jump", callback);
-  myEvent.emit("run", 2);
-  myEvent.emit("jump", "ok2", 8);
-}, 500);
+// myEvent.emit("run", 1);
+// myEvent.emit("jump", "ok", 4);
+// setTimeout(() => {
+//   myEvent.off("jump", callback);
+//   myEvent.emit("run", 2);
+//   myEvent.emit("jump", "ok2", 8);
+// }, 500);
 
 /**
 on run 1
