@@ -1,4 +1,4 @@
-class PostFormData extends FormData {
+export class PostFormData extends FormData {
   public readonly form: HTMLFormElement;
   public readonly fetchInit: RequestInit;
   public action = "/";
