@@ -43,6 +43,21 @@ export class MyEvent<EventList extends Record<string, (...args: any) => void>> {
     }
     return this;
   }
+  public wait<T, EventName extends keyof EventList, Args extends Parameters<EventList[EventName]>>(
+    eventName: EventName,
+    filter: (...args: Args) => T
+  ) {
+    return new Promise<Exclude<T, undefined>>(r => {
+      const callback = ((...args: Args) => {
+        const returnValue = filter(...args);
+        if (returnValue !== undefined) {
+          this.off(eventName, callback);
+          r(returnValue as Exclude<T, undefined>);
+        }
+      }) as EventList[EventName];
+      this.on(eventName, callback);
+    });
+  }
 }
 
 // 测试用例
