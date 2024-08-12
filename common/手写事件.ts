@@ -43,18 +43,19 @@ export class MyEvent<EventList extends Record<string, (...args: any) => void>> {
     }
     return this;
   }
-  public wait<T, EventName extends keyof EventList, Args extends Parameters<EventList[EventName]>>(
+  public when<T, EventName extends keyof EventList>(
     eventName: EventName,
-    filter: (...args: Args) => T
+    filter: (...args: Parameters<EventList[EventName]>) => T | undefined
   ) {
-    return new Promise<Exclude<T, undefined>>(r => {
-      const callback = ((...args: Args) => {
+    return new Promise<T>(r => {
+      // @ts-ignore
+      const callback: EventList[EventName] = (...args: Parameters<EventList[EventName]>): void => {
         const returnValue = filter(...args);
         if (returnValue !== undefined) {
           this.off(eventName, callback);
-          r(returnValue as Exclude<T, undefined>);
+          r(returnValue);
         }
-      }) as EventList[EventName];
+      };
       this.on(eventName, callback);
     });
   }
