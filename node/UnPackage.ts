@@ -214,13 +214,20 @@ export class UnPackage extends stream.Writable {
     });
     return false;
   }
-  private mkdir(fileInfo: IFileInfo) {
-    fs.mkdir(fileInfo.filePath, { recursive: true }, () => {
-      fileInfo.stage = EUnPackageFileStage.哈希;
-      this.writeLock = false;
-      this._write();
-      fs.utimes(fileInfo.filePath, fileInfo.atime || new Date(), fileInfo.mtime || new Date(), () => {});
-    });
+  private async mkdir(fileInfo: IFileInfo) {
+    // console.log("是文件夹", fileInfo);
+
+    fs.mkdirSync(path.resolve(this.outputDirectory, fileInfo.filePath), { recursive: true });
+
+    fileInfo.stage = EUnPackageFileStage.哈希;
+    this.writeLock = false;
+    this._write();
+    fs.utimes(
+      path.resolve(this.outputDirectory, fileInfo.filePath),
+      fileInfo.atime || new Date(),
+      fileInfo.mtime || new Date(),
+      () => {}
+    );
   }
 
   private _onFile(fileInfo: IFileInfo) {
