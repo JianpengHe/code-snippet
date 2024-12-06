@@ -106,6 +106,10 @@ export class UnPackage extends stream.Writable {
         const index = this.tempBuf[0].indexOf("\0");
         if (index < 0) break;
         this.fileInfo.filePath = String(this.tempBuf[0].subarray(0, index));
+        if (!path.resolve(this.outputDirectory, this.fileInfo.filePath).startsWith(this.outputDirectory)) {
+          console.log(this.fileInfo);
+          throw new Error("该文件试图脱离当前目录，已被阻止");
+        }
         this.fileInfo.lastSize -= index + 1 + 16;
         this.fileInfo.fileSize = this.fileInfo.lastSize;
         this.tempBuf[0] = this.tempBuf[0].subarray(index + 1);
@@ -131,7 +135,7 @@ export class UnPackage extends stream.Writable {
           return false;
         } else {
           /** 判断文件夹 */
-          if (fileInfo.filePath.endsWith("/")) {
+          if (fileInfo.filePath.endsWith("/") || fileInfo.filePath.endsWith("\\")) {
             this.writeLock = true;
             this.mkdir(fileInfo);
             return false;
