@@ -2,6 +2,7 @@ import * as stream from "stream";
 import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
+import { RecvStreamPro } from "../../tools/src/node/RecvStreamPro";
 
 type IAddFile = {
   fullPath?: string;
@@ -16,7 +17,7 @@ type IAddFile = {
   md5?: crypto.Hash;
 };
 
-export class Package extends stream.Readable {
+class Package extends stream.Readable {
   constructor(inputDirectory?: string) {
     super();
     if (inputDirectory !== undefined) {
@@ -30,14 +31,15 @@ export class Package extends stream.Readable {
   static async readDirectory(directory: string) {
     directory = path.resolve(directory);
     const fileList: Omit<IAddFile, "resolve" | "reject" | "md5">[] = [];
-    const root = path.parse(directory).dir + path.sep;
+    let root = path.parse(directory).dir;
+    if (!root.endsWith(path.sep)) root += path.sep;
     async function dfs(fullPath: string) {
       const stats = await fs.promises.lstat(fullPath);
       const isDirectory = stats.isDirectory();
       const isFile = stats.isFile();
       if (isDirectory || isFile) {
         if (isDirectory && !fullPath.endsWith(path.sep)) fullPath += path.sep;
-        if (!fullPath.startsWith(root)) throw new Error("不支持上层文件夹" + fullPath);
+        if (!fullPath.startsWith(root)) throw new Error("不支持上层文件夹" + fullPath + ",root:" + root);
         fileList.push({
           fullPath,
           relativePath: fullPath.substring(root.length),
@@ -187,3 +189,132 @@ export class Package extends stream.Readable {
     });
   }
 }
+
+type IFileInfo = {
+  relativePath: string;
+  fileSize: number;
+  fileStream?: stream.Readable;
+  ctime: Date;
+  mtime: Date;
+  atime: Date;
+  verificationResult?: boolean;
+  // md5?: crypto.Hash;
+};
+class UnPackage extends RecvStreamPro {
+  constructor(onFile?: (fileInfo: IFileInfo) => void | Promise<void>, onError?: (fileInfo: IFileInfo) => void) {
+    super();
+    this.read(onFile, onError);
+  }
+  private async read(onFile?: (fileInfo: IFileInfo) => void | Promise<void>, onError?: (fileInfo: IFileInfo) => void) {
+    while (!this.isFinal) {
+      let headInfoBuf = this.readBuffer(24);
+      headInfoBuf = (headInfoBuf.constructor === Promise ? await headInfoBuf : headInfoBuf) as Buffer;
+      if (headInfoBuf.length !== 24) return;
+      // console.log(headInfoBuf);
+      const fileInfo: IFileInfo = {
+        fileSize: headInfoBuf.readIntLE(0, 6),
+        ctime: new Date(headInfoBuf.readIntLE(6, 6)),
+        mtime: new Date(headInfoBuf.readIntLE(12, 6)),
+        atime: new Date(headInfoBuf.readIntLE(18, 6)),
+        relativePath: "",
+      };
+
+      let relativePathBuf = this.readBufferUnfixed(2, buf => {
+        const index = buf.indexOf(0);
+        return index < 0 ? -1 : index + 1;
+      });
+      relativePathBuf = (relativePathBuf.constructor === Promise ? await relativePathBuf : relativePathBuf) as Buffer;
+
+      fileInfo.relativePath = String(relativePathBuf).trim();
+      if (fileInfo.relativePath[fileInfo.relativePath.length - 1] === "\0")
+        fileInfo.relativePath = fileInfo.relativePath.substring(0, fileInfo.relativePath.length - 1);
+      /** 文件大小 */
+      fileInfo.fileSize -=
+        3 * 6 +
+        /** 文件相对路径 */
+        relativePathBuf.length;
+
+      if (fileInfo.fileSize > 0) {
+        /** MD5 */
+        fileInfo.fileSize -= 16;
+      }
+
+      let md5: crypto.Hash | undefined;
+      if (fileInfo.fileSize > 0) {
+        md5 = crypto.createHash("md5");
+        const fileStream = this.readStream(fileInfo.fileSize);
+        fileInfo.fileStream = fileStream;
+        fileStream.pipe(md5, { end: false });
+
+        await Promise.all([(onFile?.(fileInfo), new Promise(r => fileStream.once("close", r)))]);
+
+        let md5Buf = this.readBuffer(16);
+        md5Buf = (md5Buf.constructor === Promise ? await md5Buf : md5Buf) as Buffer;
+        // console.log(md5.digest(), md5Buf);
+        fileInfo.verificationResult = md5.digest().equals(md5Buf);
+
+        if (!fileInfo.verificationResult) {
+          if (onError) onError(fileInfo);
+          else throw new Error("MD5校验失败");
+        }
+      } else {
+        const onFileReturn = onFile?.(fileInfo);
+        if (onFileReturn) await onFileReturn;
+      }
+    }
+  }
+  static writeToDisk(diskPath = __dirname) {
+    return ({ fileStream, atime, mtime, ctime, relativePath }: IFileInfo) => {
+      diskPath = path.resolve(diskPath);
+      const fullPath = path.resolve(diskPath, relativePath);
+      if (!fullPath.startsWith(diskPath)) throw new Error(relativePath + "试图脱离当前目录，已被阻止");
+      if (fileStream) {
+        const fileWriteStream = fs.createWriteStream(fullPath + ".temp");
+        fileStream.pipe(fileWriteStream);
+        fileWriteStream.once("close", () =>
+          fs.rename(fullPath + ".temp", fullPath, () => fs.utimes(fullPath, atime, mtime, () => {}))
+        );
+        return;
+      }
+      if (relativePath.endsWith("/") || relativePath.endsWith("\\")) {
+        return new Promise<void>(resolve => {
+          fs.mkdir(fullPath, { recursive: true }, () => {
+            resolve();
+            fs.utimes(fullPath, atime, mtime, () => {});
+          });
+        });
+      }
+      fs.writeFile(fullPath, Buffer.allocUnsafe(0), () => fs.utimes(fullPath, atime, mtime, () => {}));
+      return;
+    };
+  }
+}
+
+export default { Package, UnPackage };
+/** 测试用例 */
+// import * as child_process from "child_process";
+// import * as os from "os";
+
+// const TestCases = (dir: string) => {
+//   console.log("开始打包", dir);
+//   console.time("打包耗时");
+//   const f = fs.createWriteStream("../test.bin");
+//   new Package(dir).pipe(f);
+//   f.once("close", () => {
+//     console.timeEnd("打包耗时");
+//     console.time("解包耗时");
+//     fs.createReadStream("../test.bin").pipe(new UnPackage(UnPackage.writeToDisk(__dirname)));
+//     process.on("exit", () => console.timeEnd("解包耗时"));
+//   });
+// };
+
+/** 测试用例1 大小不一的文件 */
+// TestCases(os.homedir() + "/Downloads/flutter");
+/** 测试用例2 超多小文件 */
+// TestCases(String(child_process.execSync("pnpm store path")).trim());
+/** 测试用例3 几个超大文件 */
+// TestCases(os.homedir() + "/Downloads");
+// TestCases("D:/九五至尊");
+/** 测试用例4 空文件夹和空文件 */
+// fs.mkdirSync("../t");
+// TestCases("../t");
