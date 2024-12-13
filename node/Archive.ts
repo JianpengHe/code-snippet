@@ -94,7 +94,7 @@ export class Package extends stream.Readable {
         /** 文件大小 */
         size +
         /** MD5 */
-        16,
+        (size > 0 ? 16 : 0),
       0,
       6
     );
@@ -122,7 +122,7 @@ export class Package extends stream.Readable {
       return;
     }
 
-    this.push(Buffer.alloc(16).fill(0));
+    // this.push(Buffer.alloc(16).fill(0));
     resolve("");
     this.curFile = undefined;
     this.tryToAddFile();
