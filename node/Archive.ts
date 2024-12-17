@@ -14,7 +14,8 @@ type IAddFile = {
   readable?: stream.Readable;
   resolve: (md5: string) => void;
   reject: (reason?: Error) => void;
-  md5?: crypto.Hash;
+  md5Handle?: crypto.Hash;
+  md5?: Buffer;
 };
 
 class Package extends stream.Readable {
@@ -30,7 +31,7 @@ class Package extends stream.Readable {
 
   static async readDirectory(directory: string) {
     directory = path.resolve(directory);
-    const fileList: Omit<IAddFile, "resolve" | "reject" | "md5">[] = [];
+    const fileList: Omit<IAddFile, "resolve" | "reject" | "md5Handle">[] = [];
     let root = path.parse(directory).dir;
     if (!root.endsWith(path.sep)) root += path.sep;
     async function dfs(fullPath: string) {
@@ -110,14 +111,16 @@ class Package extends stream.Readable {
 
     /** 不为空文件 */
     if (size !== 0) {
-      this.curFile.md5 = crypto.createHash("md5");
+      this.curFile.md5Handle = crypto.createHash("md5");
       this.curFile.readable = readable ?? (fullPath ? fs.createReadStream(fullPath) : undefined);
       this.curFile.readable?.once("close", () => {
-        const md5 = this.curFile?.md5?.digest();
-        if (!md5) throw new Error("md5不存在");
-        this.push(md5);
-        resolve(md5.toString("hex"));
-        this.curFile = undefined;
+        if (this.curFile) {
+          this.curFile.md5 = this.curFile.md5Handle?.digest();
+          if (!this.curFile.md5) throw new Error("md5不存在");
+          this.push(this.curFile.md5);
+          resolve(this.curFile.md5.toString("hex"));
+          this.curFile = undefined;
+        }
         this.tryToAddFile();
       });
       this._read(16384);
@@ -146,7 +149,10 @@ class Package extends stream.Readable {
         reject(new Error("已结束，不允许再添加"));
         return;
       }
-      this.addFileQueue.push({ ...file, resolve, reject });
+      const fileInfo = file as IAddFile;
+      fileInfo.resolve = resolve;
+      fileInfo.reject = reject;
+      this.addFileQueue.push(fileInfo);
       this.tryToAddFile();
     });
   }
@@ -164,8 +170,8 @@ class Package extends stream.Readable {
 
   public _read(size: number) {
     if (!this.curFile) return;
-    const { resolve, reject, md5, readable } = this.curFile;
-    if (!readable || !md5) {
+    const { resolve, reject, md5Handle, readable } = this.curFile;
+    if (!readable || !md5Handle) {
       const err = new Error("size不为0时，readable不能为空");
       reject(err);
       this.destroy(err);
@@ -176,7 +182,7 @@ class Package extends stream.Readable {
     if (readable.readableLength) {
       const buf = readable.read();
       if (buf) {
-        md5.update(buf);
+        md5Handle.update(buf);
         this.push(buf);
         return;
       }
@@ -184,13 +190,13 @@ class Package extends stream.Readable {
     readable.once("readable", () => {
       const buf = readable.read();
       if (!buf) return;
-      md5.update(buf);
+      md5Handle.update(buf);
       this.push(buf);
     });
   }
 }
 
-type IFileInfo = {
+export type IFileInfo = {
   relativePath: string;
   fileSize: number;
   fileStream?: stream.Readable;
@@ -198,18 +204,40 @@ type IFileInfo = {
   mtime: Date;
   atime: Date;
   verificationResult?: boolean;
-  // md5?: crypto.Hash;
+  md5?: Buffer;
+};
+
+export type IUnPackageOpt = {
+  outputDir?: string;
+  onFileInfo?: (fileInfo: IFileInfo) => void;
+  onFile?: (fileInfo: IFileInfo) => void;
+  onDir?: (fileInfo: IFileInfo) => void | Promise<void>;
+  onError?: (fileInfo: IFileInfo) => void;
 };
 class UnPackage extends RecvStreamPro {
-  constructor(onFile?: (fileInfo: IFileInfo) => void | Promise<void>, onError?: (fileInfo: IFileInfo) => void) {
+  private readonly opt: Omit<IUnPackageOpt, "outputDir"> & { outputDir: string };
+  constructor(opt?: IUnPackageOpt) {
     super();
-    this.read(onFile, onError);
+    this.opt = { ...opt, outputDir: path.resolve(opt?.outputDir ?? __dirname) };
+    this.read();
   }
-  private async read(onFile?: (fileInfo: IFileInfo) => void | Promise<void>, onError?: (fileInfo: IFileInfo) => void) {
+  private async onEnd() {
+    for (const [fullPath, { atime, mtime, ctime }] of [...this.utimesDirs.entries()].sort(
+      (a, b) => b[0].length - a[0].length
+    )) {
+      await fs.promises.utimes(fullPath, atime, mtime);
+    }
+    this.utimesDirs.clear();
+  }
+  private async read() {
     while (!this.isFinal) {
       let headInfoBuf = this.readBuffer(24);
       headInfoBuf = (headInfoBuf.constructor === Promise ? await headInfoBuf : headInfoBuf) as Buffer;
-      if (headInfoBuf.length !== 24) return;
+      if (headInfoBuf.length !== 24) {
+        /** 结束了 */
+        this.onEnd();
+        return;
+      }
       // console.log(headInfoBuf);
       const fileInfo: IFileInfo = {
         fileSize: headInfoBuf.readIntLE(0, 6),
@@ -226,6 +254,7 @@ class UnPackage extends RecvStreamPro {
       relativePathBuf = (relativePathBuf.constructor === Promise ? await relativePathBuf : relativePathBuf) as Buffer;
 
       fileInfo.relativePath = String(relativePathBuf).trim();
+
       if (fileInfo.relativePath[fileInfo.relativePath.length - 1] === "\0")
         fileInfo.relativePath = fileInfo.relativePath.substring(0, fileInfo.relativePath.length - 1);
       /** 文件大小 */
@@ -246,50 +275,61 @@ class UnPackage extends RecvStreamPro {
         fileInfo.fileStream = fileStream;
         fileStream.pipe(md5, { end: false });
 
-        await Promise.all([(onFile?.(fileInfo), new Promise(r => fileStream.once("close", r)))]);
+        await Promise.all([(this.onFileInfo(fileInfo), new Promise(r => fileStream.once("close", r)))]);
 
         let md5Buf = this.readBuffer(16);
         md5Buf = (md5Buf.constructor === Promise ? await md5Buf : md5Buf) as Buffer;
         // console.log(md5.digest(), md5Buf);
-        fileInfo.verificationResult = md5.digest().equals(md5Buf);
+        fileInfo.md5 = md5.digest();
+        fileInfo.verificationResult = fileInfo.md5.equals(md5Buf);
 
         if (!fileInfo.verificationResult) {
-          if (onError) onError(fileInfo);
+          if (this.opt.onError) this.opt.onError(fileInfo);
           else throw new Error("MD5校验失败");
         }
       } else {
-        const onFileReturn = onFile?.(fileInfo);
+        const onFileReturn = this.onFileInfo(fileInfo);
         if (onFileReturn) await onFileReturn;
       }
     }
   }
-  static writeToDisk(diskPath = __dirname) {
-    return ({ fileStream, atime, mtime, ctime, relativePath }: IFileInfo) => {
-      diskPath = path.resolve(diskPath);
-      const fullPath = path.resolve(diskPath, relativePath);
-      if (!fullPath.startsWith(diskPath)) throw new Error(relativePath + "试图脱离当前目录，已被阻止");
-      if (fileStream) {
+  private utimesDirs: Map<string, { atime: Date; mtime: Date; ctime: Date }> = new Map();
+  private onFileInfo(fileInfo: IFileInfo) {
+    this.opt.onFileInfo?.(fileInfo);
+    const { fileStream, atime, mtime, ctime, relativePath } = fileInfo;
+    const fullPath = path.resolve(this.opt.outputDir, relativePath);
+    if (!fullPath.startsWith(this.opt.outputDir))
+      throw new Error(relativePath + "试图脱离当前目录" + this.opt.outputDir + "，已被阻止");
+
+    if (relativePath.endsWith("/") || relativePath.endsWith("\\")) {
+      return this.opt?.onDir
+        ? this.opt?.onDir(fileInfo)
+        : new Promise<void>(resolve => {
+            fs.mkdir(fullPath, { recursive: true }, () => {
+              this.utimesDirs.set(fullPath, { atime, mtime, ctime });
+              resolve();
+            });
+          });
+    }
+
+    if (this.opt?.onFile) return this.opt?.onFile(fileInfo);
+
+    if (fileStream) {
+      return new Promise<void>(resolve => {
         const fileWriteStream = fs.createWriteStream(fullPath + ".temp");
         fileStream.pipe(fileWriteStream);
         fileWriteStream.once("close", () =>
-          fs.rename(fullPath + ".temp", fullPath, () => fs.utimes(fullPath, atime, mtime, () => {}))
-        );
-        return;
-      }
-      if (relativePath.endsWith("/") || relativePath.endsWith("\\")) {
-        return new Promise<void>(resolve => {
-          fs.mkdir(fullPath, { recursive: true }, () => {
+          fs.rename(fullPath + ".temp", fullPath, () => {
             resolve();
             fs.utimes(fullPath, atime, mtime, () => {});
-          });
-        });
-      }
-      fs.writeFile(fullPath, Buffer.allocUnsafe(0), () => fs.utimes(fullPath, atime, mtime, () => {}));
-      return;
-    };
+          })
+        );
+      });
+    }
+    fs.writeFile(fullPath, Buffer.allocUnsafe(0), () => fs.utimes(fullPath, atime, mtime, () => {}));
+    return;
   }
 }
-
 export default { Package, UnPackage };
 /** 测试用例 */
 // import * as child_process from "child_process";
