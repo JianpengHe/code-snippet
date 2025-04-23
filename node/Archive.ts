@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as crypto from "crypto";
 import { RecvStreamPro } from "../../tools/src/node/RecvStreamPro";
 
-type IAddFile = {
+export type IAddFile = {
   fullPath?: string;
   relativePath: string;
   size: number;
@@ -29,12 +29,14 @@ class Package extends stream.Readable {
     }
   }
 
-  static async readDirectory(directory: string) {
+  static async readDirectory(directory: string, exclude?: RegExp, withoutMyself = true) {
     directory = path.resolve(directory);
     const fileList: Omit<IAddFile, "resolve" | "reject" | "md5Handle">[] = [];
     let root = path.parse(directory).dir;
     if (!root.endsWith(path.sep)) root += path.sep;
     async function dfs(fullPath: string) {
+      if (exclude && exclude.test(fullPath)) return;
+      if (withoutMyself && fullPath === __filename) return;
       const stats = await fs.promises.lstat(fullPath);
       const isDirectory = stats.isDirectory();
       const isFile = stats.isFile();
