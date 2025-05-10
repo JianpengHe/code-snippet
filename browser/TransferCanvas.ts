@@ -13,7 +13,7 @@ const workerScript = String((canvasWidth: number, canvasHeight: number, opt: ISe
   // 这里是worker的代码（Worker线程中执行的脚本）
   const configOptions: Required<ISendCanvasOptions> = {
     errorRate: 3, // 默认容错率为3
-    maxFps: 50,   // 默认最大帧率为50fps
+    maxFps: 50, // 默认最大帧率为50fps
     maxSpeed: 500 * 1024, // 默认最大传输速度为500KB/s
     // speedStatisticalPeriod: 3000, // 默认网速统计周期为3秒
     ...opt, // 合并用户传入的配置选项
@@ -71,7 +71,7 @@ const workerScript = String((canvasWidth: number, canvasHeight: number, opt: ISe
       const redDiff = Math.abs(currentRed - prevRed);
       const greenDiff = Math.abs(currentGreen - prevGreen);
       const blueDiff = Math.abs(currentBlue - prevBlue);
-      
+
       if (redDiff <= errorRate && blueDiff <= errorRate && greenDiff <= errorRate) {
         // 像素无明显变化，设置为透明（不需要传输）
         diffImageData.data[pixelIndex] = 0;
@@ -102,10 +102,10 @@ const workerScript = String((canvasWidth: number, canvasHeight: number, opt: ISe
           .stream()
           .pipeThrough(new CompressionStream("gzip")) // 使用gzip进一步压缩
       ).arrayBuffer();
-      
+
       /** 记录数据传输信息用于网速控制 */
       // maxSpeed && transferDataList.unshift([performance.now(), compressedImageData.byteLength]);
-      
+
       /** 根据网速限制调整下一帧延迟（防止网络拥塞） */
       if (maxSpeed) {
         // 计算传输当前数据需要的时间（毫秒）
@@ -113,11 +113,11 @@ const workerScript = String((canvasWidth: number, canvasHeight: number, opt: ISe
         // 取较大值作为下一帧延迟，确保不超过网速限制
         nextFrameDelay = Math.max(nextFrameDelay, transferTime);
       }
-      
+
       /** 发送压缩后的图像数据（使用可转移对象优化性能） */
       (postMessage as Worker["postMessage"])(compressedImageData, [compressedImageData]);
     }
-    
+
     // 网速统计相关代码（已注释）
     // const now = performance.now();
     // if (maxSpeed) {
@@ -131,7 +131,7 @@ const workerScript = String((canvasWidth: number, canvasHeight: number, opt: ISe
     //     speedStatisticalPeriod /
     //     1000;
     // }
-    
+
     /** 安排下一次图像处理（通知主线程可以发送新帧） */
     setTimeout(() => (postMessage as Worker["postMessage"])(null, []), nextFrameDelay);
   };
@@ -147,12 +147,12 @@ export class SendCanvas {
   /** Web Worker实例，用于在后台线程处理图像 */
   public readonly worker: Worker;
   /** 当需要读取新帧时调用，返回false可阻止读取 */
-  public onRead(): false | void {}
+  public onRead(): false | void | Promise<false | void> {}
   /** 当有新的差异帧数据时调用 */
   public onData(data: ArrayBuffer) {}
   /** Worker脚本的对象URL */
   private readonly objectURL: string;
-  
+
   /**
    * 创建画布传输实例
    * @param canvas 源画布
@@ -167,18 +167,19 @@ export class SendCanvas {
     // 创建Worker实例
     this.worker = new Worker(this.objectURL);
     // 处理Worker消息
-    this.worker.onmessage = ({ data }) => {
+    this.worker.onmessage = async ({ data }) => {
       if (!data) {
         // 如果没有数据，表示Worker请求新帧
         // 调用onRead回调，如果不返回false则创建位图并发送给Worker
-        this.onRead() !== false && createImageBitmap(canvas).then(bitmap => this.worker.postMessage(bitmap, [bitmap]));
+        (await this.onRead()) !== false &&
+          createImageBitmap(canvas).then(bitmap => this.worker.postMessage(bitmap, [bitmap]));
         return;
       }
       // 有数据时调用onData回调处理差异帧数据
       this.onData(data);
     };
   }
-  
+
   /**
    * 销毁实例，释放资源
    */
@@ -202,33 +203,33 @@ export class SendCanvas {
 //   /** 创建视频元素用于捕获屏幕内容 */
 //   const videoElement = document.createElement("video");
 //   videoElement.autoplay = true; // 设置自动播放
-//   
+//
 //   /** 请求用户选择要共享的屏幕或窗口 */
 //   videoElement.srcObject = await navigator.mediaDevices.getDisplayMedia(screenShareOptions);
-//   
+//
 //   /** 获取视频轨道 */
 //   const videoTrack = videoElement.srcObject.getVideoTracks()[0];
-//   
+//
 //   /** 当视频可以播放时开始处理 */
 //   videoElement.addEventListener("canplay", async () => {
 //     /** 获取视频尺寸 */
 //     const videoHeight = videoElement.videoHeight;
 //     const videoWidth = videoElement.videoWidth;
-//     
+//
 //     /** 创建离屏画布用于处理视频帧 */
 //     const offscreenCanvas = new OffscreenCanvas(videoWidth, videoHeight);
 //     const canvasContext = offscreenCanvas.getContext("2d", { willReadFrequently: true })!;
-//     
+//
 //     /** 创建画布传输实例 */
 //     const canvasTransfer = new SendCanvas(offscreenCanvas);
-//     
+//
 //     /** 当需要读取新帧时，将视频内容绘制到画布 */
 //     canvasTransfer.onRead = () => {
 //       if (videoTrack.readyState === "live") {
 //         canvasContext.drawImage(videoElement, 0, 0, videoWidth, videoHeight);
 //       }
 //     };
-//     
+//
 //     /** 处理传输的差异帧数据 */
 //     canvasTransfer.onData = compressedData => {
 //       console.log(compressedData); // 这里可以将数据发送到服务器或其他客户端
