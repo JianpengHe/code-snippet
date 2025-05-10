@@ -123,13 +123,13 @@ export class SendCanvas {
   public readonly worker: Worker;
   public onRead(): false | void {}
   public onData(data: ArrayBuffer) {}
-
+  private readonly objectURL: string;
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas, opt: ISendCanvasOptions = {}) {
     this.canvas = canvas;
-    const url = window.URL.createObjectURL(
+    this.objectURL = window.URL.createObjectURL(
       new Blob([`(${workerScript})(${canvas.width},${canvas.height},${JSON.stringify(opt)})`])
     );
-    this.worker = new Worker(url);
+    this.worker = new Worker(this.objectURL);
     this.worker.onmessage = ({ data }) => {
       if (!data) {
         this.onRead() !== false && createImageBitmap(canvas).then(bitmap => this.worker.postMessage(bitmap, [bitmap]));
@@ -137,6 +137,10 @@ export class SendCanvas {
       }
       this.onData(data);
     };
+  }
+  public destroy() {
+    this.worker.terminate();
+    window.URL.revokeObjectURL(this.objectURL);
   }
 }
 
