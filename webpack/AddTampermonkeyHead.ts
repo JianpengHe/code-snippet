@@ -71,7 +71,7 @@ export class AddTampermonkeyHead {
     if (start < 0) throw new Error("入口文件" + filePath + "没找到“// ==UserScript==”头");
     const end = data.slice(start + 1).findIndex(str => str.replace(/\s/g, "").toLowerCase() === "//==/userscript==");
     if (end < 0) throw new Error("入口文件" + filePath + "没找到“// ==/UserScript==”结尾");
-    const writeUsedPackageJson = {};
+    const writeUsedPackageJson = { buildTime: Math.floor(new Date().getTime() / 1000) };
     return (
       data
         .slice(start, end + 1 + start + 1)
