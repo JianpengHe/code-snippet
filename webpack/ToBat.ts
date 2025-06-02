@@ -54,8 +54,21 @@ export class ToBat {
       );
     });
   }
-  static headUAC = `/** \n@echo off\n%1 mshta vbscript:createobject("shell.application").shellexecute("%~s0","::","","runas",1)(window.close)&exit\ncd /d %~dp0\ncls\nnode %0\npause\nexit\n**/`;
-  static head = `/** \n@echo off\ncls\nnode %0\npause\nexit\n**/`;
+  static CMD = {
+    head: `/** \n@echo off\n`,
+    uac: `%1 mshta vbscript:createobject("shell.application").shellexecute("%~s0","::","","runas",1)(window.close)&exit\ncd /d %~dp0\n`,
+    end: `cls\nnode %0\npause\nexit\n**/`,
+    restart: `cls\n:S\nnode %0\ngoto S\n**/`,
+  };
+  static getCMD(
+    /**  是否需要UAC */
+    isUAC = false,
+    /** 程序结束后是否重启 */
+    isRestart = false
+  ) {
+    const { head, uac, end, restart } = ToBat.CMD;
+    return `${head}${isUAC ? uac : ""}${isRestart ? restart : end}`;
+  }
 }
 
 /** 测试用例 */
@@ -72,9 +85,9 @@ export class ToBat {
 //   plugins: [
 //     new ToBat(files => {
 //       for (const name in files) {
-//         const head = name === "init.js" ? ToBat.headUAC : ToBat.head;
+//         const cmd = name === "init.js" ? ToBat.getCMD(true) : ToBat.getCMD();
 //         const { content } = files[name];
-//         fs.writeFile("dist/" + name + ".bat", head + content, () => {});
+//         fs.writeFile("dist/" + name + ".bat", cmd + content, () => {});
 //       }
 //     }),
 //   ],
