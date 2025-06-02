@@ -5,16 +5,18 @@ export class CopyHTML {
   //（这是自定义插件的公开API）
   private srcPath: string;
   private distPath: string;
+  private jsPath: string;
   public entry: { [x: string]: string } = {};
   public output: {
     path: string; // 打包输出文件路径(__dirname指向当前文件的`绝对路径`)
     filename: string; // 打包输出文件的名字, 插入hash值
   };
-  constructor(srcPath: string = "./src", distPath: string = "./dist") {
+  constructor(srcPath: string = "./src", distPath: string = "./dist", jsPath: string = distPath) {
     this.distPath = distPath;
     this.srcPath = srcPath;
+    this.jsPath = jsPath;
     this.output = {
-      path: this.distPath,
+      path: this.jsPath,
       filename: "[name].js", // 打包输出文件的名字, 插入hash值
     };
     const files = new Set(fs.readdirSync(this.srcPath));
