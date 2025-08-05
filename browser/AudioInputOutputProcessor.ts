@@ -102,7 +102,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         }
         this.latestReceivedFrame = frameIndex;
         // 控制缓存大小（最多保留 300 帧）
-        if (this.playbackBuffer.size > 300) {
+        if (this.playbackBuffer.size > 3000) {
           // console.log([...this.playbackBuffer.keys()]);
           console.warn("播放缓存过大，执行裁剪");
           this.latestReceivedFrame = Infinity;
@@ -117,41 +117,43 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
 
       /** 每一帧执行：录音 + 播放 */
       process(inputs: Float32Array[][], outputs: Float32Array[][]) {
-        const inputData = inputs[0]?.[0];
-        const outputL = outputs[0][0];
-        const outputR = outputs[0][1];
+        const inputData = inputs[0][0];
 
         // 采集输入缓冲写入 inputBuffer
-        if (this.inputBufferIndex + 128 <= this.inputBuffer.length) {
-          if (inputData) this.inputBuffer.set(inputData, this.inputBufferIndex);
-          this.inputBufferIndex += 128;
+        if (inputData) this.inputBuffer.set(inputData, this.inputBufferIndex);
+        this.inputBufferIndex += 128;
 
-          // 填满后发送给主线程
-          if (this.inputBufferIndex === this.inputBuffer.length) {
-            //@ts-ignore
-            this.port.postMessage({
-              buffer: this.inputBuffer,
-              lastReceivedFrame: this.latestReceivedFrame,
-              currentPlayFrame: this.currentPlayFrame,
-              playbackBufferSize: this.playbackBuffer.size,
-              maxObservedJitter: this.maxObservedJitter,
-            });
-            this.inputBufferIndex = 0;
-          }
+        // 填满后发送给主线程
+        if (this.inputBufferIndex === this.inputBuffer.length) {
+          //@ts-ignore
+          this.port.postMessage({
+            buffer: this.inputBuffer,
+            lastReceivedFrame: this.latestReceivedFrame,
+            currentPlayFrame: this.currentPlayFrame,
+            playbackBufferSize: this.playbackBuffer.size,
+            maxObservedJitter: this.maxObservedJitter,
+            // t: JSON.stringify({
+            //   inputs: inputs.map(a => a.map(b => b.length)),
+            //   outputs: outputs.map(a => a.map(b => b.length)),
+            // }),
+          });
+          this.inputBufferIndex = 0;
         }
 
         // 播放：取出对应帧
         const chunk = this.playbackBuffer.get(this.currentPlayFrame);
 
         if (chunk) {
-          outputL.set(chunk);
-          outputR.set(chunk);
+          for (const output of outputs[0]) output.set(chunk);
         } else {
-          console.log("丢帧", this.playbackBuffer.size);
+          // console.log("丢帧", this.playbackBuffer.size);
+          for (const output of outputs[0]) output.fill(0);
+          // if (this.playbackBuffer.size === 0) {
+          //   this.playbackBuffer.set(this.currentPlayFrame, new Float32Array(128));
+          //   this.currentPlayFrame -= 128;
 
-          outputL.fill(0);
-          outputR.fill(0);
-
+          //   // this.latestReceivedFrame = Infinity;
+          // }
           if (this.playbackBuffer.size === 0) this.latestReceivedFrame = Infinity;
         }
 
@@ -182,14 +184,16 @@ export class AudioInputOutputProcessor {
     this.initing?.finally?.(() => URL.revokeObjectURL(objectUrl));
     this.initing.then(() => {
       this.audioNode = new AudioWorkletNode(ctx, registerProcessorName);
-      if (mediaStream) ctx.createMediaStreamSource(mediaStream).connect(this.audioNode).connect(ctx.destination);
+      if (mediaStream) ctx.createMediaStreamSource(mediaStream).connect(this.audioNode);
+      this.audioNode.connect(ctx.destination);
       this.audioNode.port.onmessage = ({
         data: { buffer, lastReceivedFrame, currentPlayFrame, playbackBufferSize, maxObservedJitter },
       }) => this.onInputData(buffer, lastReceivedFrame, currentPlayFrame, playbackBufferSize, maxObservedJitter);
     });
+    this.initing.catch(e => alert(e));
 
     const fn = () => {
-      ctx.resume();
+      if (ctx.state === "suspended") ctx.resume();
       if (!document.hidden) navigator.wakeLock.request("screen");
     };
     window.addEventListener("click", fn, { once: true });
