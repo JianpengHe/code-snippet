@@ -2,15 +2,15 @@ const registerProcessorName = "audioInputOutput";
 
 const registerProcessorFn = String((registerProcessorName: string, blockSize: number) => {
   /** 播放缓存帧数，用于启动播放延迟 */
-  const INITIAL_BUFFER_FRAMES = 5120;
+  const INITIAL_BUFFER_FRAMES = 40 * 128;
   /** 自动调整最小帧数差（尽量缓存20帧再播放，延迟大约53毫秒） */
-  const MIN_DIFF_FRAME = 128 * 20;
-  /** 自动调整最大帧数差(约500ms) */
-  // const MAX_DIFF_FRAME = 24000;
-  /** 统计周期（帧） */
-  const STATISTIC_CYCLE_FRAME = 48000 * 2;
+  const MIN_DIFF_FRAME = 20 * 128;
+  /** 自动调整最大帧数差(约800ms) */
+  const MAX_DIFF_FRAME = 300 * 128;
+  /** 统计周期（4秒） */
+  const STATISTIC_CYCLE_FRAME = 1500 * 128;
   /** 最大抖动额外加上的帧 */
-  const MAX_JITTER_ADD_FRAME = 128 * 5;
+  const MAX_JITTER_ADD_FRAME = 5 * 128;
   //@ts-ignore
   registerProcessor(
     registerProcessorName,
@@ -66,18 +66,30 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
 
         if (this.latestExpectedFrame - this.latencyStatStartFrame > STATISTIC_CYCLE_FRAME) {
           // 如果延迟超过一定阈值，则向前跳过部分帧，降低延迟
-          let expectPlayFrame = this.latestExpectedFrame - (this.maxObservedJitter + MAX_JITTER_ADD_FRAME);
+          let expectPlayFrame =
+            this.latestExpectedFrame - (Math.min(MAX_DIFF_FRAME, this.maxObservedJitter) + MAX_JITTER_ADD_FRAME);
           const diff = expectPlayFrame - this.currentPlayFrame;
           console.log("网络抖动", (this.maxObservedJitter / 48).toFixed(2), "ms", (diff / 48).toFixed(2));
           if (Math.abs(expectPlayFrame - this.currentPlayFrame) > MIN_DIFF_FRAME) {
-            console.log("调整", this.playbackBuffer.size, diff / 128);
             if (diff > 0) {
-              expectPlayFrame = this.currentPlayFrame + Math.max(1, Math.floor(diff / 128 / 5)) * 128;
+              expectPlayFrame =
+                this.currentPlayFrame +
+                (diff > MIN_DIFF_FRAME * 2 ? diff - MIN_DIFF_FRAME : Math.floor(diff / 128 / 2) * 128);
               // 播放速度过快，需要提前播放
               for (let i = this.currentPlayFrame; i < expectPlayFrame; i += 128) {
                 this.playbackBuffer.delete(i);
               }
             }
+            console.log(
+              diff > 0 ? "缩短延迟" : "",
+              "调整",
+              "当前缓存块数",
+              this.playbackBuffer.size,
+              "最大可调节",
+              diff / 128,
+              "本次调节",
+              (expectPlayFrame - this.currentPlayFrame) / 128
+            );
             this.currentPlayFrame = expectPlayFrame;
           }
           this.latestExpectedFrame = frameIndex;
@@ -148,13 +160,11 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         } else {
           // console.log("丢帧", this.playbackBuffer.size);
           for (const output of outputs[0]) output.fill(0);
-          // if (this.playbackBuffer.size === 0) {
-          //   this.playbackBuffer.set(this.currentPlayFrame, new Float32Array(128));
-          //   this.currentPlayFrame -= 128;
-
-          //   // this.latestReceivedFrame = Infinity;
-          // }
-          if (this.playbackBuffer.size === 0) this.latestReceivedFrame = Infinity;
+          if (this.playbackBuffer.size === 0) {
+            this.playbackBuffer.set(this.currentPlayFrame, new Float32Array(128));
+            this.currentPlayFrame -= 128;
+            // this.latestReceivedFrame = Infinity;
+          }
         }
 
         // 清理当前帧数据
