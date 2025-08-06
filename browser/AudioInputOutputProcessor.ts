@@ -193,11 +193,12 @@ export class AudioInputOutputProcessor {
     this.initing.catch(e => alert(e));
 
     const fn = () => {
-      if (ctx.state === "suspended") ctx.resume();
+      ctx.resume();
       if (!document.hidden) navigator.wakeLock.request("screen");
     };
     window.addEventListener("click", fn, { once: true });
     window.addEventListener("visibilitychange", fn);
+    ctx.addEventListener("statechange", fn);
   }
 
   // overwrite
