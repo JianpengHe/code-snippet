@@ -78,6 +78,8 @@ export class MatchPartner<T extends object, ID = string> {
     if (id !== undefined) {
       console.log("清理ID映射表objectMap", id);
       this.objectMap.delete(id);
+      const index = this.waitingQueue.indexOf(id);
+      if (index !== -1) this.waitingQueue.splice(index, 1);
     }
     return this;
   }
