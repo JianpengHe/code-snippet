@@ -10,7 +10,7 @@ type SignalingMessage = {
 export class WebRTCClient {
   public peerConnection: RTCPeerConnection | null = null;
   private readonly rtcConfig: RTCConfiguration;
-  private readonly baseMediaStream: MediaStream; // 保存初始媒体流，用于重连时添加轨道
+  private readonly baseMediaStream: MediaStream; // 保存初始媒体流
 
   // --- 重连状态 ---
   private reconnectCount = 0;
@@ -28,11 +28,11 @@ export class WebRTCClient {
 
   /** 网络探测相关 */
   private networkProbeTimer: number | null = null;
-  private readonly maxBitrateHigh = 5_000_000; // 高画质码率上限
-  private readonly maxBitrateMedium = 2_000_000; // 中画质
-  private readonly maxBitrateLow = 500_000; // 低画质
+  private readonly maxBitrateHigh = 5_000_000;
+  private readonly maxBitrateMedium = 2_000_000;
+  private readonly maxBitrateLow = 500_000;
 
-  /** 缓存 ICE Candidate，等待 SDP 设置完成再添加 */
+  /** 缓存 ICE Candidate */
   private _pendingCandidates: RTCIceCandidateInit[] = [];
 
   constructor(
@@ -43,6 +43,32 @@ export class WebRTCClient {
   ) {
     this.baseMediaStream = initialStream;
     this.rtcConfig = rtcConfiguration;
+  }
+
+  // 核心修改部分：提供一个清晰的启动方法给呼叫方
+  /**
+   * 作为呼叫方（Offerer）启动连接
+   */
+  public start(): void {
+    if (this.peerConnection) {
+      console.warn("连接已存在，请勿重复启动。");
+      return;
+    }
+    console.log("🚀 作为呼叫方启动连接...");
+    this._initPeerConnection();
+
+    // 呼叫方：在创建 Offer 前，使用 addTransceiver 添加轨道
+    this.baseMediaStream.getTracks().forEach(track => {
+      try {
+        this.peerConnection?.addTransceiver(track, { direction: "sendrecv" });
+        console.log(`📡 [呼叫方] 已添加 Transceiver 用于 track: ${track.id} (${track.kind})`);
+      } catch (err) {
+        console.warn("添加 transceiver 失败:", err);
+      }
+    });
+
+    this._startNetworkProbe();
+    // onnegotiationneeded 事件会被自动触发，然后开始创建 Offer
   }
 
   /** 创建数据通道 */
@@ -72,26 +98,33 @@ export class WebRTCClient {
     }
 
     if (this.peerConnection) {
+      // 移除所有事件监听器
       this.peerConnection.ontrack = null;
       this.peerConnection.ondatachannel = null;
       this.peerConnection.onconnectionstatechange = null;
       this.peerConnection.onicecandidate = null;
       this.peerConnection.onnegotiationneeded = null;
+
+      // 关闭发送方，停止媒体发送
+      this.peerConnection.getSenders().forEach(sender => {
+        try {
+          sender.track?.stop();
+        } catch (e) {
+          console.warn("停止 track 失败:", e);
+        }
+      });
+
       this.peerConnection.close();
       this.peerConnection = null;
     }
 
     this.isNegotiating = false;
     this.onConnectionStateChange?.("closed");
+    console.log("🔌 WebRTC 连接已关闭。");
   }
 
   /** 处理信令消息 */
   public async onSignalingMessage(message: SignalingMessage): Promise<void> {
-    if (!this.peerConnection) {
-      this._initAndNegotiate();
-      if (!this.peerConnection) return;
-    }
-
     try {
       switch (message.type) {
         case "join":
@@ -99,6 +132,9 @@ export class WebRTCClient {
           this._reconnect(); // 重新发起方角色
           break;
 
+        // ====================================================================
+        // 核心修改部分：应答方 (Answerer) 的处理逻辑
+        // ====================================================================
         case "offer":
           console.log("📩 收到 Offer，创建 Answer...");
           if (this.isNegotiating) {
@@ -108,10 +144,29 @@ export class WebRTCClient {
           }
           this.isNegotiating = true;
 
+          // 如果是应答方，在这里才初始化 PeerConnection
+          if (!this.peerConnection) {
+            this._initPeerConnection();
+            this._startNetworkProbe(); // 别忘了也为应答方启动网络探测
+            if (!this.peerConnection) return;
+          }
+
+          // 1. 先设置远端描述，这会自动创建 Transceivers
           await this.peerConnection.setRemoteDescription(message.sdp!);
+          console.log("✅ [应答方] 已设置 Remote Description。");
+
+          // 2. 然后将本地轨道添加到由 setRemoteDescription 创建的 Transceiver 上
+          //    使用 addTrack 是最简单、最稳妥的方式，它会自动匹配。
+          this.baseMediaStream.getTracks().forEach(track => {
+            this.peerConnection?.addTrack(track, this.baseMediaStream);
+            console.log(`📡 [应答方] 已添加 Track: ${track.id} (${track.kind})`);
+          });
+
+          // 3. 创建 Answer
           const answer = await this.peerConnection.createAnswer();
           await this.peerConnection.setLocalDescription(answer);
           this._sendSignaling({ type: "answer", sdp: this.peerConnection.localDescription! });
+          console.log("✅ [应答方] 已创建并发送 Answer。");
 
           // 处理缓存的 ICE
           for (const candidate of this._pendingCandidates) {
@@ -125,16 +180,24 @@ export class WebRTCClient {
 
         case "answer":
           console.log("📩 收到 Answer。");
-          await this.peerConnection.setRemoteDescription(message.sdp!);
+          // isNegotiating 状态可以防止在 setRemoteDescription 未完成时收到其他信令
+          if (this.peerConnection?.signalingState === "have-local-offer") {
+            await this.peerConnection.setRemoteDescription(message.sdp!);
+            console.log("✅ [呼叫方] 已设置 Remote Description (Answer)。");
+          } else {
+            console.warn("收到意外的 Answer，当前状态:", this.peerConnection?.signalingState);
+          }
           break;
 
         case "candidate":
           if (message.candidate) {
+            // 只有在设置了远端描述后才能添加 ICE 候选者
             if (this.peerConnection?.remoteDescription) {
               await this.peerConnection.addIceCandidate(message.candidate).catch(err => {
                 console.warn("添加 ICE 失败:", err);
               });
             } else {
+              // 否则先缓存起来
               this._pendingCandidates.push(message.candidate);
             }
           }
@@ -146,9 +209,9 @@ export class WebRTCClient {
       }
     } catch (err) {
       console.error("❌ 处理信令消息时出错:", err);
+      this.isNegotiating = false; // 出错时重置状态
     }
   }
-
   /**
    * 初始化并根据角色决定是否协商
    * @param isOfferer - 是否作为发起方
@@ -172,9 +235,11 @@ export class WebRTCClient {
     this._startNetworkProbe();
   }
 
-  /** 初始化 RTCPeerConnection */
+  /** 初始化 RTCPeerConnection (不再负责添加轨道) */
   private _initPeerConnection(): void {
     if (this.isClosed || this.peerConnection) return;
+
+    console.log("🔧 初始化 RTCPeerConnection...");
     this.peerConnection = new RTCPeerConnection(this.rtcConfig);
 
     this.peerConnection.onnegotiationneeded = this._handleNegotiationNeeded.bind(this);
@@ -183,6 +248,7 @@ export class WebRTCClient {
     this.peerConnection.ondatachannel = this._handleDataChannel.bind(this);
     this.peerConnection.onconnectionstatechange = this._handleConnectionStateChange.bind(this);
   }
+
   /**
    * 设置视频编码器优先级
    * 按照 AV1 > H265 > VP9 > H264 > VP8 的顺序设置偏好
@@ -202,7 +268,12 @@ export class WebRTCClient {
     const preferredCodecOrder = ["video/AV1", "video/H265", "video/VP9", "video/H264", "video/VP8"];
 
     // 获取浏览器支持的所有视频编码器
-    const { codecs } = RTCRtpSender.getCapabilities("video")!;
+    const capabilities = RTCRtpSender.getCapabilities("video");
+    if (!capabilities) {
+      console.warn("无法获取视频编码器能力。");
+      return;
+    }
+    const { codecs } = capabilities;
     console.log("浏览器支持的原始编码器列表:", codecs);
 
     // 根据我们的优先级列表对浏览器支持的编码器进行排序
@@ -212,16 +283,34 @@ export class WebRTCClient {
       sortedCodecs.push(...filtered);
     });
 
+    // 将不支持的或者未列出的编码器放到最后
+    const remainingCodecs = codecs.filter(c => !sortedCodecs.includes(c));
+    sortedCodecs.push(...remainingCodecs);
+
     console.log("排序后准备应用的编码器列表:", sortedCodecs);
 
     // 应用排序后的编码器列表
-    videoTransceiver.setCodecPreferences(sortedCodecs);
-    console.log("✅ 已成功设置视频编码器优先级。");
+    try {
+      videoTransceiver.setCodecPreferences(sortedCodecs);
+      console.log("✅ 已成功设置视频编码器优先级。");
+    } catch (err) {
+      console.error("❌ 设置编码器偏好失败:", err);
+    }
   }
 
   /** 协商流程 */
   private async _handleNegotiationNeeded(): Promise<void> {
-    if (this.isNegotiating || !this.peerConnection || this.isClosed) return;
+    if (
+      this.isNegotiating ||
+      !this.peerConnection ||
+      this.isClosed ||
+      this.peerConnection.signalingState !== "stable"
+    ) {
+      console.log(
+        ` Negotiation needed, but skipped. negotiating: ${this.isNegotiating}, state: ${this.peerConnection?.signalingState}`
+      );
+      return;
+    }
     this.isNegotiating = true;
 
     try {
@@ -250,7 +339,7 @@ export class WebRTCClient {
 
   /** 收到远程轨道 */
   private _handleTrack(event: RTCTrackEvent): void {
-    console.log(`🎥 收到远程轨道 (${event.track.kind})`);
+    console.log(`🎥 收到远程轨道 (${event.track.kind})，关联到流:`, event.streams[0]?.id);
     this.onTrack?.(event);
   }
 
@@ -264,6 +353,7 @@ export class WebRTCClient {
   private _handleConnectionStateChange(): void {
     if (!this.peerConnection) return;
     const state = this.peerConnection.connectionState;
+    console.log(`🔌 连接状态改变: ${state}`);
     this.onConnectionStateChange?.(state);
 
     switch (state) {
@@ -299,15 +389,18 @@ export class WebRTCClient {
 
   /** 重连逻辑 */
   private _reconnect(): void {
-    if (this.reconnectCount >= this.maxReconnectCount) {
-      console.error(`❌ 已达最大重连次数 (${this.maxReconnectCount})，关闭连接。`);
-      this.close();
+    if (this.isClosed || this.reconnectCount >= this.maxReconnectCount) {
+      if (!this.isClosed) {
+        console.error(`❌ 已达最大重连次数 (${this.maxReconnectCount})，关闭连接。`);
+        this.close();
+      }
       return;
     }
 
     this.reconnectCount++;
     console.log(`🔄 正在重连... (${this.reconnectCount}/${this.maxReconnectCount})`);
 
+    // 先关闭旧的连接（如果有）
     if (this.peerConnection) {
       this.peerConnection.close();
       this.peerConnection = null;
@@ -420,6 +513,7 @@ export class WebRTCClient {
     const senders = this.peerConnection?.getSenders() || [];
     senders.forEach(sender => {
       if (sender.track && sender.track.kind === "video") {
+        console.log(sender);
         const params = sender.getParameters();
         if (!params.encodings) params.encodings = [{}];
 
