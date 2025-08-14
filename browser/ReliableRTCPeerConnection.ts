@@ -1,19 +1,19 @@
 import { MyEvent } from "../common/手写事件";
 
-const logPanel = document.getElementById("logPanel") as HTMLDivElement;
-const console = new Proxy(window.console, {
-  get(target, type) {
-    return (message: string, ...a): void => {
-      const p = document.createElement("p");
-      p.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}`;
-      p.className = String(type);
-      logPanel.appendChild(p);
-      window.console[type](message, ...a);
-    };
-  },
-});
+// const logPanel = document.getElementById("logPanel") as HTMLDivElement;
+// const console = new Proxy(window.console, {
+//   get(target, type) {
+//     return (message: string, ...a): void => {
+//       const p = document.createElement("p");
+//       p.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}`;
+//       p.className = String(type);
+//       logPanel.appendChild(p);
+//       window.console[type](message, ...a);
+//     };
+//   },
+// });
 
-type ISignaling =
+export type IRTCPeerConnectionSignaling =
   | { data: null; type: "join" }
   | { data: string; type: "offer" }
   | { data: string; type: "answer" }
@@ -21,7 +21,7 @@ type ISignaling =
 
 export type ReliableRTCPeerConnectionEvent = {
   beforeNegotiation: (peerConnection: RTCPeerConnection) => void;
-  signaling: (signaling: ISignaling) => void;
+  signaling: (signaling: IRTCPeerConnectionSignaling) => void;
   beforeCreateOfferAnswer: (peerConnection: RTCPeerConnection) => void;
   close: () => void;
   connected: (peerConnection: RTCPeerConnection) => void;
@@ -117,7 +117,7 @@ export class ReliableRTCPeerConnection extends MyEvent<ReliableRTCPeerConnection
         console.warn("⚠️ WebRTC 连接断开，尝试重连...");
         if (!this.reconnectTimerId && !this.isClosed) {
           // 为了避免双方同时重连发起 offer 冲突，可以引入一个小的随机延迟
-          const randomDelay = 3000 + Math.random() * 1000;
+          const randomDelay = 1000 + Math.random() * 500;
           this.reconnectTimerId = window.setTimeout(() => {
             this.reconnectTimerId = 0;
             this.reconnect();
@@ -187,7 +187,7 @@ export class ReliableRTCPeerConnection extends MyEvent<ReliableRTCPeerConnection
   private readonly pendingCandidates: RTCIceCandidateInit[] = [];
 
   /** 处理信令消息 */
-  public async onSignalingMessage({ type, data }: ISignaling): Promise<void> {
+  public async onSignalingMessage({ type, data }: IRTCPeerConnectionSignaling): Promise<void> {
     if (this.isClosed) return;
     let { peerConnection } = this;
     console.log(type);
@@ -202,9 +202,6 @@ export class ReliableRTCPeerConnection extends MyEvent<ReliableRTCPeerConnection
 
         case "offer":
           console.log("📩 收到 Offer，创建 Answer...");
-          if (!peerConnection) {
-            peerConnection = this.initPeerConnection();
-          }
 
           if (
             peerConnection &&
@@ -213,12 +210,16 @@ export class ReliableRTCPeerConnection extends MyEvent<ReliableRTCPeerConnection
             console.warn("⚠️ 收到新的 Offer，但连接已存在。关闭旧连接以进行重新协商...");
             this.clean();
           }
+          if (!peerConnection) {
+            peerConnection = this.initPeerConnection();
+          }
+
           console.log("我现在是应答方");
           // 重置协商状态，以防万一
           this.isNegotiating = false;
 
           // 作为应答方，在这里初始化 PeerConnection
-          peerConnection = this.initPeerConnection();
+          //
           //   this._startNetworkProbe();
           await peerConnection.setRemoteDescription({ type: "offer", sdp: data });
 
@@ -281,6 +282,8 @@ export class ReliableRTCPeerConnection extends MyEvent<ReliableRTCPeerConnection
     this.emit("datachannel", ev);
   }
 }
+
+// 测试用例
 
 // const init = async () => {
 //   ws.removeEventListener("open", init);
