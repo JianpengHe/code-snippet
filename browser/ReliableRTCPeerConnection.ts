@@ -296,18 +296,30 @@ export class ReliableRTCPeerConnection extends MyEvent<ReliableRTCPeerConnection
 //     rtc.onSignalingMessage(data);
 //   });
 //   rtc.on("signaling", signaling => ws.send(JSON.stringify(signaling)));
+//   // rtc.on("beforeNegotiation", peerConnection => {
+//   //   console.log("beforeNegotiation");
+//   //   localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+//   // });
+//   // rtc.on("track", ({ track, streams }) => {
+//   //   console.log("track");
+//   //   streams[0].getTracks().forEach(track => {
+//   //     remoteVideo.srcObject = streams[0];
+//   //     remoteVideo.play().catch(() => {});
+//   //   });
+//   // });
 //   rtc.on("beforeNegotiation", peerConnection => {
 //     console.log("beforeNegotiation");
-//     localStream.getTracks().forEach(track => {
-//       peerConnection.addTrack(track, localStream);
-//     });
+//     localStream.getTracks().forEach(track => peerConnection.addTransceiver(track, { direction: "sendrecv" }));
 //   });
 //   rtc.on("track", ({ track, streams }) => {
-//     console.log("track");
-//     streams[0].getTracks().forEach(track => {
-//       remoteVideo.srcObject = streams[0];
-//       remoteVideo.play().catch(() => {});
-//     });
+//     const remoteStream = (remoteVideo.srcObject as MediaStream) || (remoteVideo.srcObject = new MediaStream());
+//     for (const t of remoteStream.getTracks()) {
+//       if (t.kind === track.kind) remoteStream.removeTrack(t);
+//     }
+
+//     // 添加 track
+//     remoteStream.addTrack(track);
+//     remoteVideo.play().catch(e => console.error(e));
 //   });
 // };
 // const wsURL = new URL("/WebSocketVoice", location.href);
