@@ -1,14 +1,26 @@
 import { ReliableRTCPeerConnection } from "./ReliableRTCPeerConnection";
+// const logPanel = document.getElementById("logPanel") as HTMLDivElement;
+// const console = new Proxy(window.console, {
+//   get(target, type) {
+//     return (message: string, ...a): void => {
+//       const p = document.createElement("pre");
+//       p.innerHTML = `[${new Date().toLocaleTimeString()}] ${String(message)}`;
+
+//       p.className = String(type);
+//       logPanel.appendChild(p);
+//       window.console[type](message, ...a);
+//     };
+//   },
+// });
 /**
  * 单路视频流的详细统计信息
  */
 export interface VideoStreamStats {
   /** 分辨率 { width, height } */
-  resolution: { width: number; height: number };
+  width: number;
+  height: number;
   /** 帧率 (fps) */
   framesPerSecond: number;
-  /** 码率 (kbps) */
-  bitrateKbps: number;
   /** 编码器 mimeType, e.g., "video/VP9" */
   codec: string;
   /** 数据包丢失总数 */
@@ -22,35 +34,25 @@ export interface VideoStreamStats {
 }
 
 /**
- * 包含上行和下行视频流的完整统计信息
- */
-export interface StreamingStats {
-  /** 我方发送给远端的视频流信息 (Outbound) */
-  outboundVideo: VideoStreamStats | null;
-  /** 我方从远端接收的视频流信息 (Inbound) */
-  inboundVideo: VideoStreamStats | null;
-}
-
-/**
  * @fileoverview 扩展了 ReliableRTCPeerConnection, 增加了基于网络状况的自适应视频质量控制功能。
  */
 
 export class ReliableVideoRTC extends ReliableRTCPeerConnection {
   // --- 视频质量控制参数 (保持不变) ---
-  private static readonly MAX_BITRATE = 10_000_000;
-  private static readonly MIN_BITRATE = 500_000;
-  private static readonly START_BITRATE = 2_500_000;
-  private static readonly ADAPTATION_INTERVAL = 5000;
+  // private static readonly MAX_BITRATE = 10_000_000;
+  // private static readonly MIN_BITRATE = 500_000;
+  // private static readonly START_BITRATE = 2_500_000;
+  // private static readonly ADAPTATION_INTERVAL = 5000;
 
   // --- 内部状态 ---
-  private videoSender: RTCRtpSender | null = null;
-  private adaptationIntervalId: number = 0;
-  private lastStatsReport: RTCStatsReport | null = null;
+  // private videoSender: RTCRtpSender | null = null;
+  // private adaptationIntervalId: number = 0;
+  // private lastStatsReport: RTCStatsReport | null = null;
   /**
    * 由用户传入的本地媒体流
    */
   private readonly localStream: MediaStream;
-
+  public onTransceiver(transceiver: RTCRtpTransceiver) {}
   constructor(
     stream: MediaStream,
     remoteVideo?: HTMLVideoElement | null,
@@ -81,10 +83,10 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
    * [内部] 在协商开始前，设置编码器优先级。
    */
   private onBeforeNegotiation(pc: RTCPeerConnection): void {
-    this.stopQualityAdaptation();
+    // this.stopQualityAdaptation();
     if (this.role === "offer") {
-      pc.addTransceiver("audio", { direction: "sendrecv" });
-      pc.addTransceiver("video", { direction: "sendrecv" });
+      this.onTransceiver(pc.addTransceiver("audio", { direction: "sendrecv" }));
+      this.onTransceiver(pc.addTransceiver("video", { direction: "sendrecv" }));
     }
     this.setCodecPriority(pc);
   }
@@ -123,7 +125,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     } else if (track) {
       // 创建新的 Transceiver (Offerer 路径)
       console.log(`创建新的 ${kind} Transceiver。`);
-      pc.addTransceiver(track, { direction: "sendrecv" });
+      this.onTransceiver(pc.addTransceiver(track, { direction: "sendrecv" }));
     }
 
     // 如果是视频，找到对应的 sender 并交由质量监控
@@ -138,20 +140,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
   /**
    * [内部] 设置 video sender 以便进行质量控制。
    */
-  private setManagedVideoSender(sender: RTCRtpSender): void {
-    this.videoSender = sender;
-    console.log("✅ 自适应质量控制器已接管 Video Sender。");
-    // 设置初始编码参数
-    const parameters = this.videoSender.getParameters();
-    if (!parameters.encodings || parameters.encodings.length === 0) {
-      parameters.encodings = [{}];
-    }
-    parameters.encodings[0].maxBitrate = ReliableVideoRTC.START_BITRATE;
-    parameters.encodings[0].scaleResolutionDownBy = 1.0;
-    this.videoSender.setParameters(parameters).catch(err => {
-      console.error("设置初始视频参数失败:", err);
-    });
-  }
+  private setManagedVideoSender(sender: RTCRtpSender): void {}
 
   // setCodecPriority, startQualityAdaptation, stopQualityAdaptation, adaptVideoQuality 等其他内部方法保持不变...
   /**
@@ -165,7 +154,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     if (!videoTransceiver) return;
     // @ts-ignore
     if (videoTransceiver.codecPreferences && videoTransceiver.codecPreferences.length > 0) return;
-    const preferredCodecOrder = ["video/AV1", "video/H265", "video/VP9", "video/H264", "video/VP8"];
+    const preferredCodecOrder = ["video/AV1", "video/VP9", "video/VP8"];
     const capabilities = RTCRtpSender.getCapabilities("video");
     if (!capabilities) return;
     const { codecs } = capabilities;
@@ -189,131 +178,36 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
    * 当连接成功建立后，启动质量自适应监控。
    */
   private startQualityAdaptation(): void {
-    if (this.adaptationIntervalId) {
-      clearInterval(this.adaptationIntervalId);
-    }
-
-    if (!this.videoSender) {
-      // 如果没有通过 addManagedVideoTrack 添加，尝试自动查找
-      this.videoSender = this.peerConnection?.getSenders().find(s => s.track?.kind === "video") || null;
-      if (!this.videoSender) {
-        console.warn("未找到视频发送器(Video Sender)，无法启动质量自适应功能。");
-        return;
-      }
-    }
-
     console.log("🚀 启动视频质量自适应监控...");
-    this.adaptationIntervalId = window.setInterval(
-      this.adaptVideoQuality.bind(this),
-      ReliableVideoRTC.ADAPTATION_INTERVAL
-    );
   }
 
-  /**
-   * 停止质量自适应监控。
-   */
-  private stopQualityAdaptation(): void {
-    if (this.adaptationIntervalId) {
-      console.log("🛑 停止视频质量自适应监控。");
-      clearInterval(this.adaptationIntervalId);
-      this.adaptationIntervalId = 0;
-      this.lastStatsReport = null;
-    }
-  }
-
-  /**
-   * 核心方法：检查网络状态并调整视频码率。
-   */
-  private async adaptVideoQuality(): Promise<void> {
-    if (!this.videoSender || !this.lastStatsReport) {
-      // 第一次运行时，仅获取数据，不作调整
-      if (this.videoSender) {
-        this.lastStatsReport = await this.videoSender.getStats();
-      }
-      return;
-    }
-
-    const currentStats = await this.videoSender.getStats();
-    let currentBitrate = 0;
-
-    // --- 数据分析 ---
-    currentStats.forEach(report => {
-      if (report.type === "outbound-rtp" && report.kind === "video") {
-        const lastReport = this.lastStatsReport!.get(report.id);
-        if (lastReport) {
-          // 计算当前实际发送码率 (bps)
-          const bytesSent = report.bytesSent - lastReport.bytesSent;
-          const timeDiff = (report.timestamp - lastReport.timestamp) / 1000; // aec
-          if (timeDiff > 0) {
-            currentBitrate = (bytesSent * 8) / timeDiff;
-          }
-
-          // --- 决策逻辑 ---
-          const params = this.videoSender!.getParameters();
-          if (!params.encodings?.[0]) return;
-
-          let newMaxBitrate = params.encodings[0].maxBitrate || ReliableVideoRTC.START_BITRATE;
-
-          // 获取网络质量指标
-          const roundTripTime = report.roundTripTime ? report.roundTripTime * 1000 : 0; // in ms
-          const nackCount = report.nackCount - (lastReport.nackCount || 0);
-
-          console.log(
-            `[网络诊断] RTT: ${roundTripTime}ms, NACKs(增量): ${nackCount}, 当前码率: ${(
-              currentBitrate / 1_000_000
-            ).toFixed(2)} Mbps`
-          );
-
-          // 1. 如果网络状况良好 (低延迟，无丢包)，逐步增加码率
-          if (roundTripTime < 250 && nackCount === 0) {
-            newMaxBitrate *= 1.1; // 增加 10%
-          }
-          // 2. 如果出现中等网络问题 (延迟增加或少量丢包)，降低码率
-          else if (roundTripTime > 400 || nackCount > 5) {
-            newMaxBitrate *= 0.85; // 降低 15%
-          }
-          // 3. 如果网络状况很差 (高延迟且大量丢包)，大幅降低码率
-          else if (roundTripTime > 600 || nackCount > 10) {
-            newMaxBitrate *= 0.7; // 降低 30%
-          }
-
-          // 确保新码率在设定的最大/最小范围内
-          newMaxBitrate = Math.max(ReliableVideoRTC.MIN_BITRATE, Math.min(newMaxBitrate, ReliableVideoRTC.MAX_BITRATE));
-
-          // 如果新旧码率变化不大，则不进行调整，防止抖动
-          if (Math.abs(newMaxBitrate - params.encodings[0].maxBitrate!) < 100_000) {
-            return;
-          }
-
-          console.log(
-            `[质量调整] 目标最大码率从 ${(params.encodings[0].maxBitrate! / 1000).toFixed(0)} kbps 调整为 ${(
-              newMaxBitrate / 1000
-            ).toFixed(0)} kbps`
-          );
-          params.encodings[0].maxBitrate = newMaxBitrate;
-          this.videoSender!.setParameters(params).catch(err => console.error("调整码率失败:", err));
-        }
-      }
-    });
-
-    this.lastStatsReport = currentStats;
-  }
   /**
    * [核心API] 获取当前上行和下行视频流的详细统计信息。
    * 这是一个异步方法，返回一个包含分辨率、帧率、码率、编码器等信息的对象。
    * @returns {Promise<StreamingStats>} 包含音视频流详细信息的 Promise。
    */
-  public async getStreamingStats(): Promise<StreamingStats> {
+  public async getStreamingStats(
+    type: "outbound-rtp" | "inbound-rtp" = "inbound-rtp"
+  ): Promise<VideoStreamStats | null> {
     if (!this.peerConnection) {
       console.warn("PeerConnection尚未初始化，无法获取统计信息。");
-      return { outboundVideo: null, inboundVideo: null };
+      return null;
     }
 
     const report = await this.peerConnection.getStats();
-    const stats: StreamingStats = { outboundVideo: null, inboundVideo: null };
+
+    const output: VideoStreamStats = {
+      width: 0,
+      height: 0,
+      framesPerSecond: 0,
+      codec: "",
+      packetsLost: 0,
+      nackCount: 0,
+      pliCount: 0,
+      jitter: 0,
+    };
 
     // 为了计算码率，我们需要与上一次的统计数据进行比较
-    const lastReport = this.lastStatsReport;
 
     // 首先，创建一个 Codec ID 到 MimeType 的映射
     const codecMap = new Map<string, string>();
@@ -330,59 +224,90 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
         return;
       }
 
-      let targetStat: Partial<VideoStreamStats> = {}; // 使用 Partial 方便构建
-      let isProcessed = false;
-
-      // --- 处理我方接收的视频流 (Inbound) ---
-      if (stat.type === "inbound-rtp") {
-        targetStat.resolution = { width: stat.frameWidth, height: stat.frameHeight };
-        targetStat.framesPerSecond = stat.framesPerSecond;
-        targetStat.codec = codecMap.get(stat.codecId) || "N/A";
-        targetStat.packetsLost = stat.packetsLost;
-        targetStat.nackCount = stat.nackCount;
-        targetStat.pliCount = stat.pliCount;
-        targetStat.jitter = stat.jitter;
-
-        if (lastReport) {
-          const lastInboundStat = lastReport.get(stat.id);
-          if (lastInboundStat) {
-            const bytesReceived = stat.bytesReceived - lastInboundStat.bytesReceived;
-            const timeDiff = (stat.timestamp - lastInboundStat.timestamp) / 1000;
-            targetStat.bitrateKbps = timeDiff > 0 ? Math.round((bytesReceived * 8) / timeDiff / 1000) : 0;
-          }
-        }
-        stats.inboundVideo = targetStat as VideoStreamStats;
-        isProcessed = true;
-      }
-
-      // --- 处理我方发送的视频流 (Outbound) ---
-      if (stat.type === "outbound-rtp") {
-        targetStat.resolution = { width: stat.frameWidth, height: stat.frameHeight };
-        targetStat.framesPerSecond = stat.framesPerSecond;
-        targetStat.codec = codecMap.get(stat.codecId) || "N/A";
-        targetStat.nackCount = stat.nackCount;
-        targetStat.pliCount = stat.pliCount;
-        // Inbound-only stats
-        targetStat.packetsLost = 0;
-        targetStat.jitter = 0;
-
-        if (lastReport) {
-          const lastOutboundStat = lastReport.get(stat.id);
-          if (lastOutboundStat) {
-            const bytesSent = stat.bytesSent - lastOutboundStat.bytesSent;
-            const timeDiff = (stat.timestamp - lastOutboundStat.timestamp) / 1000;
-            targetStat.bitrateKbps = timeDiff > 0 ? Math.round((bytesSent * 8) / timeDiff / 1000) : 0;
-          }
-        }
-        stats.outboundVideo = targetStat as VideoStreamStats;
-        isProcessed = true;
+      if (stat.type === type) {
+        output.width = stat.frameWidth;
+        output.height = stat.frameHeight;
+        output.framesPerSecond = stat.framesPerSecond;
+        output.codec = codecMap.get(stat.codecId) || "N/A";
+        output.packetsLost = stat.packetsLost;
+        output.nackCount = stat.nackCount;
+        output.pliCount = stat.pliCount;
+        output.jitter = stat.jitter;
       }
     });
 
-    // 更新 lastStatsReport 以便下次计算码率
-    // 注意：这个方法和质量自适应方法共享 lastStatsReport
-    this.lastStatsReport = report;
+    return output;
+  }
 
-    return stats;
+  static getFrames(
+    receiver: RTCRtpReceiver,
+    onFrame: (frame: { type?: string; timestamp: number; data: ArrayBuffer }) => {
+      type?: string;
+      timestamp: number;
+      data: ArrayBuffer;
+    }
+  ) {
+    // 仅支持音视频 track
+    if (receiver.track.kind !== "video" && receiver.track.kind !== "audio") return false;
+    // const now = new Date().getTime();
+    // const wsURL = new URL(`${now}.webm`, location.href);
+    // wsURL.protocol = wsURL.protocol.replace("http", "ws");
+    // wsURL.search = "?uid=" + uid;
+    // const ws = new ReliableWebSocket(wsURL);
+
+    // @ts-ignore
+    if (receiver.createEncodedStreams) {
+      try {
+        // 保存原始帧数据
+        // @ts-ignore
+        const { readable, writable } = receiver.createEncodedStreams();
+        const transformStream = new TransformStream({
+          transform(encodedFrame, controller) {
+            controller.enqueue(onFrame(encodedFrame));
+          },
+        });
+
+        // --- 步骤 4: 启动流处理 ---
+        // 这是比手动 while 循环更推荐的方式
+        readable
+          .pipeThrough(transformStream)
+          .pipeTo(writable)
+          .catch(err => {
+            console.error("媒体流处理出错:", err);
+          });
+        // setTimeout(() => {
+        //   // 视频的尺寸信息 (必须提供)
+        //   const videoWidth = 1280;
+        //   const videoHeight = 720;
+
+        //   // 调用函数进行转换
+        //   try {
+        //     const ivfBlob = encodeFramesToIVF(arr, {
+        //       width: videoWidth,
+        //       height: videoHeight,
+        //       fourcc: "AV01", // 确保你的码流是 AV1
+        //     });
+
+        //     console.log(`IVF Blob created successfully! Size: ${ivfBlob.size} bytes`);
+
+        //     // 现在你可以使用这个 blob 了，例如生成一个下载链接
+        //     const url = URL.createObjectURL(ivfBlob);
+        //     const a = document.createElement("a");
+        //     a.href = url;
+        //     a.download = "recorded_video.ivf"; // FFmpeg 可以直接处理 .ivf 文件
+        //     document.body.appendChild(a);
+        //     a.click();
+        //     document.body.removeChild(a);
+        //     URL.revokeObjectURL(url);
+        //   } catch (error) {
+        //     console.error("Failed to encode frames to IVF:", error);
+        //   }
+        // }, 10000);
+      } catch (e) {
+        console.error(e);
+      }
+      return true;
+    }
+    return false;
   }
 }
