@@ -15,39 +15,96 @@ import { ReliableRTCPeerConnection } from "./ReliableRTCPeerConnection";
 /**
  * 单路视频流的详细统计信息
  */
-export interface VideoStreamStats {
-  /** 分辨率 { width, height } */
-  width: number;
-  height: number;
-  /** 帧率 (fps) */
-  framesPerSecond: number;
-  /** 编码器 mimeType, e.g., "video/VP9" */
-  codec: string;
-  /** 数据包丢失总数 */
-  packetsLost: number;
-  /** NACK（丢包重传请求）总数 */
-  nackCount: number;
-  /** PLI（关键帧请求）总数 */
-  pliCount: number;
-  /** 网络抖动 (seconds) */
-  jitter: number;
+
+export interface RTCEncodedFrame {
+  type?: string;
+  timestamp: number;
+  data: ArrayBuffer;
 }
 
-/**
- * @fileoverview 扩展了 ReliableRTCPeerConnection, 增加了基于网络状况的自适应视频质量控制功能。
- */
+export interface IStreamStats {
+  /** 视频编码器 mimeType, e.g., "video/VP9" */
+  videoCodec: string;
+  /** 音频编码器 mimeType, e.g., "audio/opus" */
+  audioCodec: string;
+
+  // 通用属性
+  /** 视频 NACK（丢包重传请求）总数 */
+  videoNackCount: number;
+  /** 视频网络抖动 (seconds) */
+  videoJitter: number;
+  /** 视频发送/接收的字节总数 */
+  videoBytesProcessed: number;
+  /** 视频发送/接收的数据包总数 */
+  videoPacketsProcessed: number;
+  /** 视频丢失的数据包总数 (仅限接收流) */
+  videoPacketsLost?: number;
+  /** 音频 NACK（丢包重传请求）总数 */
+  audioNackCount: number;
+  /** 音频网络抖动 (seconds) */
+  audioJitter: number;
+  /** 音频发送/接收的字节总数 */
+  audioBytesProcessed: number;
+  /** 音频发送/接收的数据包总数 */
+  audioPacketsProcessed: number;
+  /** 音频丢失的数据包总数 (仅限接收流) */
+  audioPacketsLost?: number;
+
+  // --- 视频流特有属性 ---
+
+  /** 视频帧宽度（像素）(仅限接收流)。*/
+  frameWidth?: number;
+
+  /** 视频帧高度（像素）(仅限接收流)。*/
+  frameHeight?: number;
+
+  /** 视频帧率（每秒帧数）(仅限接收流)。*/
+  framesPerSecond?: number;
+
+  /** 解码的帧数 (仅限接收流)。*/
+  framesDecoded?: number;
+
+  /** 丢弃的帧数 (仅限接收流)。*/
+  framesDropped?: number;
+
+  /** PLI（关键帧请求）的总数。*/
+  pliCount?: number;
+
+  /** FIR（帧内请求）的总数。*/
+  firCount?: number;
+
+  // --- 音频流特有属性 ---
+
+  /** 音频电平（响度）。*/
+  audioLevel?: number;
+
+  /** 音频总能量。*/
+  totalAudioEnergy?: number;
+
+  /** 被隐藏（如由于丢包）的音频样本数。*/
+  concealedSamples?: number;
+
+  /** 隐藏事件（如丢包导致的静音填充）的总数。*/
+  concealmentEvents?: number;
+
+  /** 抖动缓冲区的延迟（毫秒）(仅限接收流)。*/
+  jitterBufferDelay?: number;
+
+  /** 从抖动缓冲区发出的样本总数。*/
+  jitterBufferEmittedCount?: number;
+
+  /** 接收到的音频样本总数。*/
+  totalSamplesReceived?: number;
+
+  // --- 发送流特有属性 ---
+  /** 流是否处于活跃状态。*/
+  active?: boolean;
+
+  /** 目标码率（比特每秒）。*/
+  targetBitrate?: number;
+}
 
 export class ReliableVideoRTC extends ReliableRTCPeerConnection {
-  // --- 视频质量控制参数 (保持不变) ---
-  // private static readonly MAX_BITRATE = 10_000_000;
-  // private static readonly MIN_BITRATE = 500_000;
-  // private static readonly START_BITRATE = 2_500_000;
-  // private static readonly ADAPTATION_INTERVAL = 5000;
-
-  // --- 内部状态 ---
-  // private videoSender: RTCRtpSender | null = null;
-  // private adaptationIntervalId: number = 0;
-  // private lastStatsReport: RTCStatsReport | null = null;
   /**
    * 由用户传入的本地媒体流
    */
@@ -67,7 +124,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     // 将所有事件处理函数绑定到类内部，实现完全封装
     this.on("beforeNegotiation", this.onBeforeNegotiation.bind(this));
     this.on("beforeCreateOfferAnswer", this.onBeforeCreateOfferAnswer.bind(this));
-    this.on("connected", this.startQualityAdaptation.bind(this));
+    // this.on("connected", this.startQualityAdaptation.bind(this));
     this.on("track", ({ track }) => {
       if (!remoteVideo) return;
       const remoteStream = (remoteVideo.srcObject as MediaStream) || (remoteVideo.srcObject = new MediaStream());
@@ -76,6 +133,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
       }
       remoteStream.addTrack(track);
       remoteVideo.play().catch(e => console.error("远端视频播放失败:", e));
+      remoteVideo.muted = false;
     });
   }
 
@@ -84,6 +142,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
    */
   private onBeforeNegotiation(pc: RTCPeerConnection): void {
     // this.stopQualityAdaptation();
+
     if (this.role === "offer") {
       this.onTransceiver(pc.addTransceiver("audio", { direction: "sendrecv" }));
       this.onTransceiver(pc.addTransceiver("video", { direction: "sendrecv" }));
@@ -129,20 +188,19 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     }
 
     // 如果是视频，找到对应的 sender 并交由质量监控
-    if (kind === "video") {
-      const videoSender = pc.getSenders().find(s => s.track === track);
-      if (videoSender) {
-        this.setManagedVideoSender(videoSender);
-      }
-    }
+    // if (kind === "video") {
+    //   const videoSender = pc.getSenders().find(s => s.track === track);
+    //   if (videoSender) {
+    //     this.setManagedVideoSender(videoSender);
+    //   }
+    // }
   }
 
   /**
    * [内部] 设置 video sender 以便进行质量控制。
    */
-  private setManagedVideoSender(sender: RTCRtpSender): void {}
+  // private setManagedVideoSender(sender: RTCRtpSender): void {}
 
-  // setCodecPriority, startQualityAdaptation, stopQualityAdaptation, adaptVideoQuality 等其他内部方法保持不变...
   /**
    * 设置视频编码器优先级。
    * 按照 AV1 > H265 > VP9 > H264 > VP8 的顺序设置偏好。
@@ -151,6 +209,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     const videoTransceiver = pc
       .getTransceivers()
       .find(t => t.sender.track?.kind === "video" || t.receiver.track?.kind === "video");
+
     if (!videoTransceiver) return;
     // @ts-ignore
     if (videoTransceiver.codecPreferences && videoTransceiver.codecPreferences.length > 0) return;
@@ -177,18 +236,17 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
   /**
    * 当连接成功建立后，启动质量自适应监控。
    */
-  private startQualityAdaptation(): void {
-    console.log("🚀 启动视频质量自适应监控...");
-  }
+  // private startQualityAdaptation(): void {
+  //   console.log("🚀 启动视频质量自适应监控...");
+  // }
 
   /**
    * [核心API] 获取当前上行和下行视频流的详细统计信息。
-   * 这是一个异步方法，返回一个包含分辨率、帧率、码率、编码器等信息的对象。
-   * @returns {Promise<StreamingStats>} 包含音视频流详细信息的 Promise。
+   * 这是一个异步方法，返回一个包含音视频详细统计信息的对象。
+   * @param {string} bound - 指定获取入站 ("inbound-rtp") 或出站 ("outbound-rtp") 统计信息。
+   * @returns {Promise<IStreamStats | null>} 包含音视频流详细信息的 Promise。
    */
-  public async getStreamingStats(
-    type: "outbound-rtp" | "inbound-rtp" = "inbound-rtp"
-  ): Promise<VideoStreamStats | null> {
+  public async getStreamingStats(bound: "outbound-rtp" | "inbound-rtp" = "inbound-rtp"): Promise<IStreamStats | null> {
     if (!this.peerConnection) {
       console.warn("PeerConnection尚未初始化，无法获取统计信息。");
       return null;
@@ -196,49 +254,117 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
 
     const report = await this.peerConnection.getStats();
 
-    const output: VideoStreamStats = {
-      width: 0,
-      height: 0,
-      framesPerSecond: 0,
-      codec: "",
-      packetsLost: 0,
-      nackCount: 0,
-      pliCount: 0,
-      jitter: 0,
+    // 初始化一个完整的 IStreamStats 对象，为所有属性设置默认值
+    const output: IStreamStats = {
+      videoCodec: "",
+      audioCodec: "",
+      videoNackCount: 0,
+      videoJitter: 0,
+      videoBytesProcessed: 0,
+      videoPacketsProcessed: 0,
+      audioNackCount: 0,
+      audioJitter: 0,
+      audioBytesProcessed: 0,
+      audioPacketsProcessed: 0,
+      // 其他可选属性不在这里初始化，让它们保持 undefined，更符合实际
     };
 
-    // 为了计算码率，我们需要与上一次的统计数据进行比较
-
-    // 首先，创建一个 Codec ID 到 MimeType 的映射
+    // 首先，创建一个 Codec ID 到 MimeType 的映射，方便查找
     const codecMap = new Map<string, string>();
     report.forEach(stat => {
-      if (stat.type === "codec") {
-        codecMap.set(stat.id, stat.mimeType);
-      }
+      if (stat.type === "codec") codecMap.set(stat.id, stat.mimeType);
     });
 
-    // 遍历统计报告，查找 inbound 和 outbound 视频流
+    // 遍历统计报告，填充 IStreamStats 对象
     report.forEach(stat => {
+      // 只处理指定的入站或出站流报告
+      if (stat.type !== bound) return;
+
       const kind = stat.kind || stat.mediaType; // 兼容不同浏览器
-      if (kind !== "video") {
-        return;
+
+      // 根据流类型，分别填充视频和音频数据
+      if (kind === "video") {
+        output.videoCodec = codecMap.get(stat.codecId) || "N/A";
+        output.videoNackCount = stat.nackCount || 0;
+        output.videoJitter = stat.jitter || 0;
+        output.videoBytesProcessed = stat.bytesReceived || stat.bytesSent || 0;
+        output.videoPacketsProcessed = stat.packetsReceived || stat.packetsSent || 0;
+
+        // 仅入站流有 packetsLost 属性
+        if (bound === "inbound-rtp") output.videoPacketsLost = stat.packetsLost;
+
+        // 视频流特有属性
+        output.frameWidth = stat.frameWidth;
+        output.frameHeight = stat.frameHeight;
+        output.framesPerSecond = stat.framesPerSecond;
+        output.framesDecoded = stat.framesDecoded;
+        output.framesDropped = stat.framesDropped;
+        output.pliCount = stat.pliCount;
+        output.firCount = stat.firCount;
+      } else if (kind === "audio") {
+        output.audioCodec = codecMap.get(stat.codecId) || "N/A";
+        output.audioNackCount = stat.nackCount || 0;
+        output.audioJitter = stat.jitter || 0;
+        output.audioBytesProcessed = stat.bytesReceived || stat.bytesSent || 0;
+        output.audioPacketsProcessed = stat.packetsReceived || stat.packetsSent || 0;
+
+        // 仅入站流有 packetsLost 属性
+        if (bound === "inbound-rtp") output.audioPacketsLost = stat.packetsLost;
+
+        // 音频流特有属性
+        output.audioLevel = stat.audioLevel;
+        output.totalAudioEnergy = stat.totalAudioEnergy;
+        output.concealedSamples = stat.concealedSamples;
+        output.concealmentEvents = stat.concealmentEvents;
+        output.jitterBufferDelay = stat.jitterBufferDelay;
+        output.jitterBufferEmittedCount = stat.jitterBufferEmittedCount;
+        output.totalSamplesReceived = stat.totalSamplesReceived;
       }
 
-      if (stat.type === type) {
-        output.width = stat.frameWidth;
-        output.height = stat.frameHeight;
-        output.framesPerSecond = stat.framesPerSecond;
-        output.codec = codecMap.get(stat.codecId) || "N/A";
-        output.packetsLost = stat.packetsLost;
-        output.nackCount = stat.nackCount;
-        output.pliCount = stat.pliCount;
-        output.jitter = stat.jitter;
+      // 检查是否有发送流特有属性
+      if (bound === "outbound-rtp") {
+        output.active = stat.active;
+        output.targetBitrate = stat.targetBitrate;
       }
     });
 
-    return output;
+    // 检查是否成功获取到任何统计数据
+    if (output.videoCodec || output.audioCodec) return output;
+    return null;
   }
+  public get readFrames() {
+    return new Promise<{ audioFrames: RTCEncodedFrame[]; videoFrames: RTCEncodedFrame[]; isEnd: () => boolean }>(
+      (resolve, reject) => {
+        const audioFrames: RTCEncodedFrame[] = [];
+        const videoFrames: RTCEncodedFrame[] = [];
 
+        const read = (receiver: RTCRtpReceiver) => {
+          if (!receiver?.track) {
+            console.log(receiver);
+            throw new Error("not found: " + "transceiver?.receiver");
+          }
+          const kind = receiver.track.kind;
+          const frames = kind === "video" ? videoFrames : kind === "audio" ? audioFrames : null;
+          if (!frames) return;
+          if (
+            !ReliableVideoRTC.getFrames(receiver, data => {
+              frames.push({ type: data.type, timestamp: data.timestamp, data: data.data });
+              return data;
+            })
+          )
+            return;
+          resolve({
+            audioFrames,
+            videoFrames,
+            isEnd: () => receiver.track.readyState === "ended",
+          });
+          return;
+        };
+        this.onTransceiver = ({ receiver }) => read(receiver);
+        this.on("track", ({ receiver }) => read(receiver));
+      }
+    );
+  }
   static getFrames(
     receiver: RTCRtpReceiver,
     onFrame: (frame: { type?: string; timestamp: number; data: ArrayBuffer }) => {
@@ -249,12 +375,6 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
   ) {
     // 仅支持音视频 track
     if (receiver.track.kind !== "video" && receiver.track.kind !== "audio") return false;
-    // const now = new Date().getTime();
-    // const wsURL = new URL(`${now}.webm`, location.href);
-    // wsURL.protocol = wsURL.protocol.replace("http", "ws");
-    // wsURL.search = "?uid=" + uid;
-    // const ws = new ReliableWebSocket(wsURL);
-
     // @ts-ignore
     if (receiver.createEncodedStreams) {
       try {
@@ -275,36 +395,9 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
           .catch(err => {
             console.error("媒体流处理出错:", err);
           });
-        // setTimeout(() => {
-        //   // 视频的尺寸信息 (必须提供)
-        //   const videoWidth = 1280;
-        //   const videoHeight = 720;
-
-        //   // 调用函数进行转换
-        //   try {
-        //     const ivfBlob = encodeFramesToIVF(arr, {
-        //       width: videoWidth,
-        //       height: videoHeight,
-        //       fourcc: "AV01", // 确保你的码流是 AV1
-        //     });
-
-        //     console.log(`IVF Blob created successfully! Size: ${ivfBlob.size} bytes`);
-
-        //     // 现在你可以使用这个 blob 了，例如生成一个下载链接
-        //     const url = URL.createObjectURL(ivfBlob);
-        //     const a = document.createElement("a");
-        //     a.href = url;
-        //     a.download = "recorded_video.ivf"; // FFmpeg 可以直接处理 .ivf 文件
-        //     document.body.appendChild(a);
-        //     a.click();
-        //     document.body.removeChild(a);
-        //     URL.revokeObjectURL(url);
-        //   } catch (error) {
-        //     console.error("Failed to encode frames to IVF:", error);
-        //   }
-        // }, 10000);
       } catch (e) {
-        console.error(e);
+        // console.error(e);
+        return false;
       }
       return true;
     }
