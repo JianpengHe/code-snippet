@@ -113,6 +113,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
   constructor(
     stream: MediaStream,
     remoteVideo?: HTMLVideoElement | null,
+    muted = false,
     rtcConfig: RTCConfiguration = {
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     },
@@ -133,7 +134,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
       }
       remoteStream.addTrack(track);
       remoteVideo.play().catch(e => console.error("远端视频播放失败:", e));
-      remoteVideo.muted = false;
+      remoteVideo.muted = muted;
     });
   }
 
