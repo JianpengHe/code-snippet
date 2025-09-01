@@ -214,7 +214,8 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     if (!videoTransceiver) return;
     // @ts-ignore
     if (videoTransceiver.codecPreferences && videoTransceiver.codecPreferences.length > 0) return;
-    const preferredCodecOrder = ["video/AV1", "video/VP9", "video/VP8"];
+    const preferredCodecOrder = ["video/AV1", "video/H265", "video/VP9", "video/H264", "video/VP8"];
+
     const capabilities = RTCRtpSender.getCapabilities("video");
     if (!capabilities) return;
     const { codecs } = capabilities;
