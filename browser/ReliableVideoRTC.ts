@@ -20,6 +20,8 @@ export interface RTCEncodedFrame {
   type?: string;
   timestamp: number;
   data: ArrayBuffer;
+  track: MediaStreamTrack;
+  now: number;
 }
 
 export interface IStreamStats {
@@ -180,6 +182,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
       console.log(`复用已有的 ${kind} Transceiver。`);
       if (existingTransceiver.sender.track !== track) {
         existingTransceiver.sender.replaceTrack(track);
+        // this.onTransceiver(existingTransceiver);
       }
       existingTransceiver.direction = track ? "sendrecv" : "recvonly";
     } else if (track) {
@@ -334,38 +337,44 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     if (output.videoCodec || output.audioCodec) return output;
     return null;
   }
-  public get readFrames() {
-    return new Promise<{ audioFrames: RTCEncodedFrame[]; videoFrames: RTCEncodedFrame[]; isEnd: () => boolean }>(
-      (resolve, reject) => {
-        const audioFrames: RTCEncodedFrame[] = [];
-        const videoFrames: RTCEncodedFrame[] = [];
+  public readFrames() {
+    return new Promise<{ frames: RTCEncodedFrame[]; isEnd: () => boolean }>((resolve, reject) => {
+      const tracks: Set<MediaStreamTrack> = new Set();
+      const frames: RTCEncodedFrame[] = [];
+      const read = (receiver: RTCRtpReceiver) => {
+        if (!receiver?.track) {
+          console.log(receiver);
+          throw new Error("not found: " + "transceiver?.receiver");
+        }
+        const kind = receiver.track.kind;
+        if (kind !== "video" && kind !== "audio") return;
 
-        const read = (receiver: RTCRtpReceiver) => {
-          if (!receiver?.track) {
-            console.log(receiver);
-            throw new Error("not found: " + "transceiver?.receiver");
-          }
-          const kind = receiver.track.kind;
-          const frames = kind === "video" ? videoFrames : kind === "audio" ? audioFrames : null;
-          if (!frames) return;
-          if (
-            !ReliableVideoRTC.getFrames(receiver, data => {
-              frames.push({ type: data.type, timestamp: data.timestamp, data: data.data });
-              return data;
-            })
-          )
-            return;
-          resolve({
-            audioFrames,
-            videoFrames,
-            isEnd: () => receiver.track.readyState === "ended",
-          });
+        if (
+          tracks.has(receiver.track) ||
+          !ReliableVideoRTC.getFrames(receiver, data => {
+            frames.push({
+              type: data.type,
+              timestamp: data.timestamp,
+              data: data.data,
+              track: receiver.track,
+              now: Math.floor(performance.now()),
+            });
+            return data;
+          })
+        )
           return;
-        };
-        this.onTransceiver = ({ receiver }) => read(receiver);
-        this.on("track", ({ receiver }) => read(receiver));
-      }
-    );
+        tracks.add(receiver.track);
+        receiver.track.addEventListener("ended", () => tracks.delete(receiver.track));
+        console.log(tracks);
+        resolve({
+          frames,
+          isEnd: () => tracks.size === 0,
+        });
+        return;
+      };
+      this.onTransceiver = ({ receiver }) => read(receiver);
+      this.on("track", ({ receiver }) => read(receiver));
+    });
   }
   static getFrames(
     receiver: RTCRtpReceiver,
@@ -398,11 +407,68 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
             console.error("媒体流处理出错:", err);
           });
       } catch (e) {
-        // console.error(e);
+        console.error(e);
         return false;
       }
       return true;
     }
     return false;
+  }
+  /**
+   * 对 RTCEncodedFrame 数组进行排序。
+   * 这个函数确保对于每一个独立的 MediaStreamTrack，其对应的帧都严格按照 timestamp 升序排列。
+   * 这对于处理网络传输中乱序到达的媒体帧非常重要。
+   * @param frames RTCEncodedFrame 帧数组
+   * @returns 排序后的帧数组
+   */
+  static sortFrames(frames: RTCEncodedFrame[]) {
+    // 使用 Map 来记录每个轨道（track）最后遇到的帧的时间戳
+    const timeMap = new Map<MediaStreamTrack, number>();
+
+    // 遍历所有待排序的帧
+    for (let i = 0; i < frames.length; i++) {
+      const { track, timestamp } = frames[i];
+      // 获取当前轨道已记录的最新时间戳，如果是新轨道则默认为 0
+      const preTimestamp = timeMap.get(track) || 0;
+
+      // 如果当前帧的时间戳小于该轨道之前记录的时间戳，说明发生了乱序
+      if (timestamp < preTimestamp) {
+        /**
+         * 发现乱序帧，需要将其回溯插入到正确的位置。
+         */
+        let j = i - 1;
+
+        // 从当前位置向前搜索，为这个乱序的帧找到正确的插入点
+        while (j >= 0) {
+          // 使用后缀递减 j--：先用 j 的当前值获取 frame，然后 j 的值立即减 1
+          const frame = frames[j--];
+
+          // 如果不是同一个轨道，就跳过
+          if (frame.track !== track) continue;
+
+          // 如果找到了时间戳更小的帧，说明乱序帧应该插在此帧之后
+          if (frame.timestamp < timestamp) {
+            // 因为在上面 frame[j--] 中，j 已经多减了 1，
+            // 所以这里用 j++ 将其“拨回”到正确的索引位置。
+            j++;
+            break;
+          }
+        }
+
+        // 暂存需要移动的乱序帧
+        const frameToMove = frames[i];
+        // 从原位置删除
+        frames.splice(i, 1);
+        // 在计算出的正确位置 j+1 处插入。
+        // 如果循环到底都没找到（即乱序帧是最小的），j 会是 -1，j+1=0，插入到最前面，逻辑正确。
+        frames.splice(j + 1, 0, frameToMove);
+      }
+
+      // 更新当前轨道的最新时间戳
+      timeMap.set(track, timestamp);
+    }
+
+    // 返回排序完成的数组
+    return frames;
   }
 }
