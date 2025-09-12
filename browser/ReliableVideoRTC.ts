@@ -25,7 +25,8 @@ export interface RTCEncodedFrame {
 }
 
 export interface IStreamStats {
-  /** 视频编码器 mimeType, e.g., "video/VP9" */
+  bound: "outbound-rtp" | "inbound-rtp";
+  /** 视频编码器 mimeType, e.g., "VP9" */
   videoCodec: string;
   /** 音频编码器 mimeType, e.g., "audio/opus" */
   audioCodec: string;
@@ -41,6 +42,12 @@ export interface IStreamStats {
   videoPacketsProcessed: number;
   /** 视频丢失的数据包总数 (仅限接收流) */
   videoPacketsLost?: number;
+
+  /** 视频编/解码器实现 */
+  videoImplementation: string;
+  /** 音频编/解码器实现 */
+  audioImplementation: string;
+
   /** 音频 NACK（丢包重传请求）总数 */
   audioNackCount: number;
   /** 音频网络抖动 (seconds) */
@@ -111,6 +118,10 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
    * 由用户传入的本地媒体流
    */
   private readonly localStream: MediaStream;
+  /**
+   * 编码器优先级
+   */
+  public preferredCodecOrder: Array<"av1" | "h265" | "vp9" | "h264" | "vp8" | ""> = curPreferredCodecOrder;
   public onTransceiver(transceiver: RTCRtpTransceiver) {}
   constructor(
     stream: MediaStream,
@@ -207,7 +218,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
 
   /**
    * 设置视频编码器优先级。
-   * 按照 AV1 > H265 > VP9 > H264 > VP8 的顺序设置偏好。
+   * 按照 av1 > H265 > VP9 > H264 > VP8 的顺序设置偏好。
    */
   private setCodecPriority(pc: RTCPeerConnection): void {
     const videoTransceiver = pc
@@ -217,15 +228,16 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     if (!videoTransceiver) return;
     // @ts-ignore
     if (videoTransceiver.codecPreferences && videoTransceiver.codecPreferences.length > 0) return;
-    const preferredCodecOrder = ["video/AV1", "video/H265", "video/VP9", "video/H264", "video/VP8"];
 
     const capabilities = RTCRtpSender.getCapabilities("video");
     if (!capabilities) return;
     const { codecs } = capabilities;
     const sortedCodecs: any[] = [];
-    preferredCodecOrder.forEach(mimeType =>
-      sortedCodecs.push(...codecs.filter(c => c.mimeType.toLowerCase() === mimeType.toLowerCase()))
-    );
+    this.preferredCodecOrder
+      .filter(Boolean)
+      .forEach(mimeType =>
+        sortedCodecs.push(...codecs.filter(c => c.mimeType.toLowerCase().includes(mimeType.toLowerCase())))
+      );
     const remainingCodecs = codecs.filter(
       c => !sortedCodecs.some(sc => sc.mimeType === c.mimeType && sc.sdpFmtpLine === c.sdpFmtpLine)
     );
@@ -251,7 +263,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
    * @param {string} bound - 指定获取入站 ("inbound-rtp") 或出站 ("outbound-rtp") 统计信息。
    * @returns {Promise<IStreamStats | null>} 包含音视频流详细信息的 Promise。
    */
-  public async getStreamingStats(bound: "outbound-rtp" | "inbound-rtp" = "inbound-rtp"): Promise<IStreamStats | null> {
+  public async getStreamingStats(bound: IStreamStats["bound"] = "inbound-rtp"): Promise<IStreamStats | null> {
     if (!this.peerConnection) {
       console.warn("PeerConnection尚未初始化，无法获取统计信息。");
       return null;
@@ -261,6 +273,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
 
     // 初始化一个完整的 IStreamStats 对象，为所有属性设置默认值
     const output: IStreamStats = {
+      bound,
       videoCodec: "",
       audioCodec: "",
       videoNackCount: 0,
@@ -271,6 +284,8 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
       audioJitter: 0,
       audioBytesProcessed: 0,
       audioPacketsProcessed: 0,
+      videoImplementation: "",
+      audioImplementation: "",
       // 其他可选属性不在这里初始化，让它们保持 undefined，更符合实际
     };
 
@@ -294,6 +309,11 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
         output.videoJitter = stat.jitter || 0;
         output.videoBytesProcessed = stat.bytesReceived || stat.bytesSent || 0;
         output.videoPacketsProcessed = stat.packetsReceived || stat.packetsSent || 0;
+        output.videoImplementation = stat.decoderImplementation || stat.encoderImplementation || "";
+        if (output.videoImplementation)
+          output.videoImplementation = `[${classifyImplementation(output.videoImplementation)}]${
+            output.videoImplementation
+          }`;
 
         // 仅入站流有 packetsLost 属性
         if (bound === "inbound-rtp") output.videoPacketsLost = stat.packetsLost;
@@ -312,6 +332,11 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
         output.audioJitter = stat.jitter || 0;
         output.audioBytesProcessed = stat.bytesReceived || stat.bytesSent || 0;
         output.audioPacketsProcessed = stat.packetsReceived || stat.packetsSent || 0;
+        output.audioImplementation = stat.decoderImplementation || stat.encoderImplementation || "";
+        if (output.audioImplementation)
+          output.audioImplementation = `[${classifyImplementation(output.audioImplementation)}]${
+            output.audioImplementation
+          }`;
 
         // 仅入站流有 packetsLost 属性
         if (bound === "inbound-rtp") output.audioPacketsLost = stat.packetsLost;
@@ -472,3 +497,114 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     return frames;
   }
 }
+
+export function classifyImplementation(impl: string) {
+  if (!impl) return "unknown";
+  const s = String(impl).trim();
+  const lower = s.toLowerCase();
+
+  // hardware tokens (包括 Windows D3D11, macOS VDA/VideoToolbox, Linux VAAPI 等)
+  const hwTokens = [
+    "mediacodec",
+    "videotoolbox",
+    "vaapi",
+    "qsv",
+    "nvenc",
+    "nvdec",
+    "dxva",
+    "d3d11",
+    "vda",
+    "vdavideodecoder",
+    "videoaccelerator",
+    "amf",
+    "v4l2",
+    "externaldecoder",
+    "externalencoder",
+  ];
+
+  // software tokens
+  const swTokens = [
+    "libvpx",
+    "libaom",
+    "ffmpeg",
+    "x264",
+    "x265",
+    "openh264",
+    "rav1e",
+    "libsvt",
+    "svt",
+    "software",
+    "libaom-av1",
+    "vpx",
+    "aom",
+  ];
+
+  // If it's ExternalDecoder(...) or ExternalEncoder(...), check the inner name for hw tokens
+  const extMatch = s.match(/external(?:decoder|encoder)\s*\(\s*([^)]+)\s*\)/i);
+  if (extMatch && extMatch[1]) {
+    const inner = extMatch[1].toLowerCase();
+    for (const t of hwTokens) if (inner.includes(t)) return "hardware";
+    for (const t of swTokens) if (inner.includes(t)) return "software";
+    // if unknown inner name, still treat as hardware *if* inner name contains typical hw substrings like d3d11/vda/vaapi/mediacodec
+    if (/(d3d11|vda|vaapi|mediacodec|videotoolbox|nvenc|dxva)/i.test(inner)) return "hardware";
+    return "unknown";
+  }
+
+  for (const t of hwTokens) if (lower.includes(t)) return "hardware";
+  for (const t of swTokens) if (lower.includes(t)) return "software";
+
+  // heuristic: strings containing 'ffmpeg' or 'lib' -> software
+  if (lower.includes("ffmpeg") || lower.includes("lib")) return "software";
+
+  return "unknown";
+}
+
+const curPreferredCodecOrder: ReliableVideoRTC["preferredCodecOrder"] = ["av1", "h265", "vp9", "h264", "vp8"];
+async function checkAllCodecHardwareSupport() {
+  // 定义我们要检测的各种编码格式的配置
+  // 注意：'codecs'字符串对于准确检测至关重要
+  const codecConfigs = {
+    av1: "video/mp4; codecs=av01.0.05M.08",
+    h265: "video/mp4; codecs=hvc1.1.6.L93.B0",
+    vp9: "video/webm; codecs=vp09.00.10.08",
+    h264: "video/mp4; codecs=avc1.42E01E",
+    vp8: "video/webm; codecs=vp8",
+  };
+
+  const res = await Promise.all(
+    curPreferredCodecOrder.map(codecName =>
+      navigator.mediaCapabilities.decodingInfo({
+        type: "file", // 或者 'webrtc' 用于实时通信场景
+        video: {
+          contentType: codecConfigs[codecName],
+          width: 1280,
+          height: 720,
+          bitrate: 2500000, // 2.5 Mbps
+          framerate: 30,
+        },
+      })
+    )
+  );
+  // @ts-ignore
+  const log = window.log || console.log;
+  for (let i = 0; i < res.length; i++) {
+    const codecName = curPreferredCodecOrder[i];
+    if (!codecName) continue;
+    const support = res[i];
+    if (support.supported && support.powerEfficient) {
+      // 这是最理想的情况，通常意味着硬件加速
+      log(codecName + "：✅播放视频支持硬件解码");
+    } else if (support.supported) {
+      // 支持，但不是节能的，通常意味着CPU软解
+      log(codecName + "：⚠️播放视频支持软件解码");
+      curPreferredCodecOrder[i] = "";
+    } else {
+      // 完全不支持
+      log(codecName + "：❌播放视频不支持解码");
+      curPreferredCodecOrder[i] = "";
+    }
+  }
+}
+
+// 执行检测函数
+checkAllCodecHardwareSupport();
