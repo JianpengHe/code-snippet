@@ -1,19 +1,5 @@
 import { MyEvent } from "../common/手写事件";
 
-// const logPanel = document.getElementById("logPanel") as HTMLDivElement;
-// const console = new Proxy(window.console, {
-//   get(target, type) {
-//     return (message: string, ...a): void => {
-//       const p = document.createElement("pre");
-//       p.innerHTML = `[${new Date().toLocaleTimeString()}] ${String(message)}`;
-
-//       p.className = String(type);
-//       logPanel.appendChild(p);
-//       window.console[type](message, ...a);
-//     };
-//   },
-// });
-
 /**
  * @fileoverview 定义一个可靠的、带自动重连功能的 WebRTC 对等连接类。
  */
@@ -66,39 +52,36 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
   public role: "offer" | "answer" = "answer";
 
   /**
-   * 允许的最大自动重连次数。
-   */
-  private readonly maxReconnectAttempts: number;
-
-  /**
    * RTCPeerConnection 的原生实例。
    */
   public peerConnection: RTCPeerConnection | null = null;
-
-  /**
-   * WebRTC 的配置，主要用于指定 ICE 服务器。
-   */
-  private readonly rtcConfig: RTCConfiguration;
 
   /**
    * 标记连接是否已被手动关闭。
    */
   public isClosed = false;
 
-  /**
-   * 构造函数
-   * @param {RTCConfiguration} rtcConfig - WebRTC 配置，例如 STUN/TURN 服务器。
-   * @param {number} maxReconnectAttempts - 最大重连次数，默认为 10。
-   */
+  public log(...args: any[]): void {
+    console.log(...args);
+  }
   constructor(
-    rtcConfig: RTCConfiguration = {
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    /** WebRTC 的配置，主要用于指定 ICE 服务器。 */
+    public readonly rtcConfig: RTCConfiguration = {
+      iceServers: [
+        {
+          urls: [
+            "stun:stun.miwifi.com:3478",
+            "stun:stun.chat.bilibili.com:3478",
+            "stun:stun.cloudflare.com:3478",
+            "stun:stun.l.google.com:19302",
+          ],
+        },
+      ],
     },
-    maxReconnectAttempts = 10
+    /** 允许的最大自动重连次数。*/
+    private readonly maxReconnectAttempts = 10
   ) {
     super();
-    this.rtcConfig = rtcConfig;
-    this.maxReconnectAttempts = maxReconnectAttempts;
     this.start();
   }
 
@@ -109,7 +92,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
     this.cleanupPeerConnection();
     // 默认将后加入者设定为 "answer" 方，等待对方发起 "offer"。
     this.role = "answer";
-    console.log("我的角色已初始化为: " + this.role);
+    this.log("我的角色已初始化为: " + this.role);
     // 异步发送 "join" 信号，通知对方自己的存在，并建议对方成为 "offer" 方。
     Promise.resolve().then(() =>
       this.emit("signaling", { type: "join", data: this.role === "answer" ? "offer" : "answer" })
@@ -121,7 +104,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
    * @returns {RTCPeerConnection} 新创建的 RTCPeerConnection 实例。
    */
   private initializePeerConnection(): RTCPeerConnection {
-    console.log("🔧 初始化 RTCPeerConnection...");
+    this.log("🔧 初始化 RTCPeerConnection...");
     this.cleanupPeerConnection(); // 清理旧的连接实例
 
     const newPeerConnection = new RTCPeerConnection(this.rtcConfig);
@@ -150,9 +133,9 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
    * 只有 "offer" 方会主动发起协商。
    */
   private async handleNegotiationNeeded(): Promise<void> {
-    console.log("触发 handleNegotiationNeeded");
+    this.log("触发 handleNegotiationNeeded");
     if (this.role === "answer") {
-      console.log("角色为 'answer'，不主动发起协商。");
+      this.log("角色为 'answer'，不主动发起协商。");
       return;
     }
 
@@ -162,13 +145,13 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
       this.isClosed ||
       this.peerConnection.signalingState !== "stable"
     ) {
-      console.warn("协商条件不满足，跳过本次协商请求。");
+      this.log("协商条件不满足，跳过本次协商请求。");
       return;
     }
 
     this.isNegotiating = true;
     try {
-      console.log("🤝 需要协商，正在创建 Offer...");
+      this.log("🤝 需要协商，正在创建 Offer...");
       this.emit("beforeCreateOfferAnswer", this.peerConnection);
       const offer = await this.peerConnection.createOffer();
       await this.peerConnection.setLocalDescription(offer);
@@ -179,7 +162,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
       // 通过 'signaling' 事件将 Offer SDP 发送出去
       this.emit("signaling", { data: this.peerConnection.localDescription.sdp, type: "offer" });
     } catch (error) {
-      console.error("❌ 创建 Offer 失败:", error);
+      this.log("❌ 创建 Offer 失败:", error);
     } finally {
       this.isNegotiating = false;
     }
@@ -191,10 +174,50 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
    * @param {RTCPeerConnectionIceEvent} event - 包含候选者的事件对象。
    */
   private handleIceCandidate(event: RTCPeerConnectionIceEvent): void {
+    this.log(event.candidate);
     if (event.candidate) {
+      // @ts-ignore
+      this.log("【发现新的 ICE 候选者】" + event.candidate.url);
       // 将发现的 ICE 候选者通过信令发送给对方
       this.emit("signaling", { type: "candidate", data: event.candidate });
     }
+  }
+
+  public async printSelectedIceCandidatePair() {
+    if (!this.peerConnection) throw new Error("peerConnection 实例不存在。");
+    const stats = await this.peerConnection.getStats();
+    let selectedPairId = "";
+
+    // 方法 1：查 transport 条目
+    stats.forEach(report => {
+      if (report.type === "transport" && report.selectedCandidatePairId) {
+        selectedPairId = report.selectedCandidatePairId;
+      }
+    });
+
+    // 方法 2（兼容老浏览器）：如果 transport 没有该字段，从 candidate-pair 里找 nominated 且 state = succeeded 的那一对
+    if (!selectedPairId) {
+      stats.forEach(report => {
+        if (report.type === "candidate-pair" && report.nominated && report.state === "succeeded") {
+          selectedPairId = report.id;
+        }
+      });
+    }
+
+    if (!selectedPairId) {
+      console.warn("未能找到被选用的 candidate pair");
+      return;
+    }
+
+    // 找出 local 和 remote 的 candidate 信息
+    stats.forEach(report => {
+      if (report.type === "local-candidate" && report.id === stats.get(selectedPairId)?.localCandidateId) {
+        this.log(`【本地候选】 ${report.address} [${report.protocol}]${report.relatedAddress} ${report.url}`);
+      }
+      if (report.type === "remote-candidate" && report.id === stats.get(selectedPairId)?.remoteCandidateId) {
+        this.log(`【远端候选】 ${report.address} [${report.protocol}]`);
+      }
+    });
   }
 
   /**
@@ -205,7 +228,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
     if (!this.peerConnection) throw new Error("peerConnection 实例不存在。");
     const state = this.peerConnection.connectionState;
     this.emit("onconnectionstatechange", state);
-    console.log(`🔌 连接状态改变: ${state}`);
+    this.log(`🔌 连接状态改变: ${state}`);
 
     switch (state) {
       case "connected":
@@ -214,12 +237,13 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
           clearTimeout(this.reconnectTimerId);
           this.reconnectTimerId = 0;
         }
-        console.log("✅ WebRTC 已建立连接。");
+        this.log("✅ WebRTC 已建立连接。");
         this.emit("connected", this.peerConnection);
+        this.printSelectedIceCandidatePair();
         break;
 
       case "disconnected":
-        console.warn("⚠️ WebRTC 连接断开，尝试重连...");
+        this.log("⚠️ WebRTC 连接断开，尝试重连...");
         // 添加随机延迟，避免双方同时发起重连导致冲突
         if (!this.reconnectTimerId && !this.isClosed) {
           this.reconnectTimerId = window.setTimeout(() => {
@@ -230,7 +254,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
         break;
 
       case "failed":
-        console.error("❌ WebRTC 连接失败，立即尝试重连...");
+        this.log("❌ WebRTC 连接失败，立即尝试重连...");
         if (!this.reconnectTimerId && !this.isClosed) {
           this.reconnectTimerId = window.setTimeout(() => {
             this.reconnectTimerId = 0;
@@ -263,13 +287,13 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
     if (this.isClosed) return;
 
     if (this.currentReconnectAttempt >= this.maxReconnectAttempts) {
-      console.error(`❌ 已达到最大重连次数 (${this.maxReconnectAttempts})，停止重连。`);
+      this.log(`❌ 已达到最大重连次数 (${this.maxReconnectAttempts})，停止重连。`);
       this.cleanupPeerConnection();
       return;
     }
 
     this.currentReconnectAttempt++;
-    console.log(`🔄 正在进行第 ${this.currentReconnectAttempt}/${this.maxReconnectAttempts} 次重连...`);
+    this.log(`🔄 正在进行第 ${this.currentReconnectAttempt}/${this.maxReconnectAttempts} 次重连...`);
     this.isNegotiating = false;
 
     // 重新初始化 PeerConnection，将由 'onnegotiationneeded' 自动触发 offer 创建流程。
@@ -286,7 +310,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
     this.cleanupPeerConnection();
     this.isNegotiating = false;
     this.emit("close");
-    console.log("🔌 WebRTC 连接已关闭。");
+    this.log("🔌 WebRTC 连接已关闭。");
   }
 
   /**
@@ -323,29 +347,29 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
   public async onSignalingMessage({ type, data }: SignalingMessage): Promise<void> {
     if (this.isClosed) return;
 
-    console.log(`📩 收到信令消息: ${type}`);
+    this.log(`📩 收到信令消息: ${type}`);
 
     try {
       switch (type) {
         case "join":
-          console.log("对方请求协商，我方将成为指定的角色并发起连接。");
+          this.log("对方请求协商，我方将成为指定的角色并发起连接。");
           this.role = data;
-          console.log("我的新角色是: " + this.role);
+          this.log("我的新角色是: " + this.role);
           this.currentReconnectAttempt = 0; // 重置重连计数
           this.reconnect(); // 作为指定角色重新开始连接流程
           break;
 
         case "offer":
           if (this.role === "offer") {
-            console.warn("作为 'offer' 方，忽略收到的 'offer'。");
+            this.log("作为 'offer' 方，忽略收到的 'offer'。");
             return;
           }
           if (this.peerConnection?.connectionState === "connected") {
-            console.warn("⚠️ 连接已存在，忽略新的 'offer'。");
+            this.log("⚠️ 连接已存在，忽略新的 'offer'。");
             return;
           }
 
-          console.log("收到 Offer，准备创建 Answer...");
+          this.log("收到 Offer，准备创建 Answer...");
           // 如果当前 PeerConnection 状态不适合接收 Offer，则重新初始化。
           if (!this.peerConnection || this.peerConnection.signalingState !== "stable") {
             this.initializePeerConnection();
@@ -354,7 +378,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
           this.isNegotiating = false; // 重置协商状态
 
           await this.peerConnection!.setRemoteDescription({ type: "offer", sdp: data });
-          console.log("✅ [应答方] 已设置 Remote Description。");
+          this.log("✅ [应答方] 已设置 Remote Description。");
 
           this.emit("beforeCreateOfferAnswer", this.peerConnection!);
 
@@ -363,12 +387,12 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
           if (!this.peerConnection!.localDescription) throw new Error("创建 Answer 后 localDescription 为空");
 
           this.emit("signaling", { type: "answer", data: this.peerConnection!.localDescription.sdp });
-          console.log("✅ [应答方] 已创建并发送 Answer。");
+          this.log("✅ [应答方] 已创建并发送 Answer。");
 
           // 添加之前缓存的 ICE 候选者
           for (const candidate of this.pendingCandidates) {
             await this.peerConnection!.addIceCandidate(candidate).catch(err => {
-              console.warn("添加缓存的 ICE 候选者失败:", err);
+              this.log("添加缓存的 ICE 候选者失败:", err);
             });
           }
           this.pendingCandidates.length = 0;
@@ -376,14 +400,14 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
 
         case "answer":
           if (this.role === "answer") {
-            console.warn("作为 'answer' 方，忽略收到的 'answer'。");
+            this.log("作为 'answer' 方，忽略收到的 'answer'。");
             return;
           }
           if (this.peerConnection?.signalingState === "have-local-offer") {
             await this.peerConnection.setRemoteDescription({ type: "answer", sdp: data });
-            console.log("✅ [发起方] 已设置 Remote Description (Answer)。");
+            this.log("✅ [发起方] 已设置 Remote Description (Answer)。");
           } else {
-            console.warn(`收到意外的 Answer，当前状态: ${this.peerConnection?.signalingState}`);
+            this.log(`收到意外的 Answer，当前状态: ${this.peerConnection?.signalingState}`);
           }
           break;
 
@@ -392,7 +416,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
             // 如果 remoteDescription 已经设置，则直接添加 candidate；否则，先缓存起来。
             if (this.peerConnection?.remoteDescription) {
               await this.peerConnection.addIceCandidate(data).catch(err => {
-                console.warn("添加 ICE 候选者失败:", err);
+                this.log("添加 ICE 候选者失败:", err);
               });
             } else {
               this.pendingCandidates.push(data);
@@ -401,7 +425,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
           break;
       }
     } catch (error) {
-      console.error(`❌ 处理信令消息 "${type}" 时出错:`, error);
+      this.log(`❌ 处理信令消息 "${type}" 时出错:`, error);
       this.isNegotiating = false; // 发生错误时重置协商状态
     }
   }
@@ -411,7 +435,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
    * @param {RTCTrackEvent} event - 包含媒体轨道的事件对象。
    */
   private handleTrack(event: RTCTrackEvent): void {
-    console.log(`📡 收到媒体轨道 (Track): kind=${event.track.kind}`, event.track);
+    this.log(`📡 收到媒体轨道 (Track): kind=${event.track.kind}`, event.track);
     this.emit("track", event);
   }
 
@@ -420,7 +444,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
    * @param {RTCDataChannelEvent} event - 包含数据通道的事件对象。
    */
   private handleDataChannel(event: RTCDataChannelEvent): void {
-    console.log("📡 收到数据通道 (DataChannel):", event.channel.label);
+    this.log("📡 收到数据通道 (DataChannel):", event.channel.label);
     this.emit("datachannel", event);
   }
 }
@@ -434,16 +458,16 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
 //   const rtc = new ReliableRTCPeerConnection();
 //   ws.addEventListener("message", e => {
 //     const data = JSON.parse(e.data);
-//     console.log(data.type);
+//     this.log(data.type);
 //     rtc.onSignalingMessage(data);
 //   });
 //   rtc.on("signaling", signaling => ws.send(JSON.stringify(signaling)));
 //   rtc.on("beforeNegotiation", peerConnection => {
-//     console.log("beforeNegotiation");
+//     this.log("beforeNegotiation");
 //     localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 //   });
 //   rtc.on("track", ({ track, streams }) => {
-//     console.log("track");
+//     this.log("track");
 //     streams[0].getTracks().forEach(track => {
 //       remoteVideo.srcObject = streams[0];
 //       remoteVideo.play().catch(() => {});
@@ -487,12 +511,12 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
 
 //   const rtc = new ReliableRTCPeerConnection();
 //   ws.addEventListener("open", () => {
-//     console.log("网络重连");
+//     this.log("网络重连");
 //     rtc.start();
 //   });
 //   ws.addEventListener("message", e => {
 //     const data = JSON.parse(e.data);
-//     console.log("信令消息:", data.type);
+//     this.log("信令消息:", data.type);
 //     rtc.onSignalingMessage(data);
 //   });
 
@@ -519,7 +543,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
 //       if (t.kind === track.kind) remoteStream.removeTrack(t);
 //     }
 //     remoteStream.addTrack(track);
-//     remoteVideo.play().catch(e => console.error(e));
+//     remoteVideo.play().catch(e => this.log(e));
 //   });
 // };
 

@@ -1,17 +1,5 @@
 import { ReliableRTCPeerConnection } from "./ReliableRTCPeerConnection";
-// const logPanel = document.getElementById("logPanel") as HTMLDivElement;
-// const console = new Proxy(window.console, {
-//   get(target, type) {
-//     return (message: string, ...a): void => {
-//       const p = document.createElement("pre");
-//       p.innerHTML = `[${new Date().toLocaleTimeString()}] ${String(message)}`;
 
-//       p.className = String(type);
-//       logPanel.appendChild(p);
-//       window.console[type](message, ...a);
-//     };
-//   },
-// });
 /**
  * 单路视频流的详细统计信息
  */
@@ -126,11 +114,9 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
   constructor(
     stream: MediaStream,
     remoteVideo?: HTMLVideoElement | null,
-    muted = false,
-    rtcConfig: RTCConfiguration = {
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    },
-    maxReconnectAttempts = 10
+    muted = true,
+    rtcConfig?: RTCConfiguration,
+    maxReconnectAttempts?: number
   ) {
     super(rtcConfig, maxReconnectAttempts);
     this.localStream = stream;
@@ -146,7 +132,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
         if (t.kind === track.kind) remoteStream.removeTrack(t);
       }
       remoteStream.addTrack(track);
-      remoteVideo.play().catch(e => console.error("远端视频播放失败:", e));
+      remoteVideo.play().catch(e => this.log("远端视频播放失败:", e));
       remoteVideo.muted = muted;
     });
   }
@@ -169,9 +155,9 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
    * 这是实现封装的核心，它取代了所有外部的轨道管理代码。
    */
   private onBeforeCreateOfferAnswer(pc: RTCPeerConnection): void {
-    console.log("onBeforeCreateOfferAnswer");
+    this.log("onBeforeCreateOfferAnswer");
 
-    console.log("准备创建 Offer/Answer，内部开始处理 Transceiver...");
+    this.log("准备创建 Offer/Answer，内部开始处理 Transceiver...");
     const videoTrack = this.localStream.getVideoTracks()[0] || null;
     const audioTrack = this.localStream.getAudioTracks()[0] || null;
 
@@ -190,7 +176,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
 
     if (existingTransceiver) {
       // 复用已有的 Transceiver (Answerer 路径)
-      console.log(`复用已有的 ${kind} Transceiver。`);
+      this.log(`复用已有的 ${kind} Transceiver。`);
       if (existingTransceiver.sender.track !== track) {
         existingTransceiver.sender.replaceTrack(track);
         // this.onTransceiver(existingTransceiver);
@@ -198,7 +184,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
       existingTransceiver.direction = track ? "sendrecv" : "recvonly";
     } else if (track) {
       // 创建新的 Transceiver (Offerer 路径)
-      console.log(`创建新的 ${kind} Transceiver。`);
+      this.log(`创建新的 ${kind} Transceiver。`);
       this.onTransceiver(pc.addTransceiver(track, { direction: "sendrecv" }));
     }
 
@@ -244,9 +230,9 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
     sortedCodecs.push(...remainingCodecs);
     try {
       videoTransceiver.setCodecPreferences(sortedCodecs);
-      console.log("✅ 已成功设置视频编码器优先级。");
+      this.log("✅ 已成功设置视频编码器优先级。");
     } catch (err) {
-      console.error("❌ 设置编码器偏好失败:", err);
+      this.log("❌ 设置编码器偏好失败:", err);
     }
   }
 
@@ -254,7 +240,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
    * 当连接成功建立后，启动质量自适应监控。
    */
   // private startQualityAdaptation(): void {
-  //   console.log("🚀 启动视频质量自适应监控...");
+  //   this.log("🚀 启动视频质量自适应监控...");
   // }
 
   /**
@@ -265,7 +251,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
    */
   public async getStreamingStats(bound: IStreamStats["bound"] = "inbound-rtp"): Promise<IStreamStats | null> {
     if (!this.peerConnection) {
-      console.warn("PeerConnection尚未初始化，无法获取统计信息。");
+      this.log("PeerConnection尚未初始化，无法获取统计信息。");
       return null;
     }
 
@@ -368,7 +354,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
       const frames: RTCEncodedFrame[] = [];
       const read = (receiver: RTCRtpReceiver) => {
         if (!receiver?.track) {
-          console.log(receiver);
+          this.log(receiver);
           throw new Error("not found: " + "transceiver?.receiver");
         }
         const kind = receiver.track.kind;
@@ -390,7 +376,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
           return;
         tracks.add(receiver.track);
         receiver.track.addEventListener("ended", () => tracks.delete(receiver.track));
-        console.log(tracks);
+        this.log(tracks);
         resolve({
           frames,
           isEnd: () => tracks.size === 0,
