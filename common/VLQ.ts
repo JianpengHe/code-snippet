@@ -22,18 +22,18 @@
  */
 export function encodeVLQ_BE(valueToEncode: number): Uint8Array {
   // 校验输入数字是否在安全整数范围内
-  if (valueToEncode < 0 || valueToEncode > Number.MAX_SAFE_INTEGER) {
+  if (valueToEncode > Number.MAX_SAFE_INTEGER) {
     throw new RangeError("输入数字超出了安全整数范围 [0, Number.MAX_SAFE_INTEGER]");
   }
 
   // 性能优化：最常见的情况是单字节编码（值 < 128）
-  if (valueToEncode < 128) {
+  if (valueToEncode >= 0 && valueToEncode < 128) {
     // 1字节编码，前缀是 `1` (二进制 `10000000`)
     return Uint8Array.of(0b10000000 | valueToEncode);
   }
 
   // 计算表示该数字至少需要多少个比特位
-  const significantBitCount = Math.floor(Math.log2(valueToEncode)) + 1;
+  const significantBitCount = valueToEncode < 0 ? 54 : Math.floor(Math.log2(valueToEncode)) + 1;
   // 根据有效比特位数，计算编码后需要占用的总字节数
   const encodedByteLength = Math.ceil(significantBitCount / 7);
   // 计算后续负载字节的数量 (continuation bytes)
@@ -42,7 +42,6 @@ export function encodeVLQ_BE(valueToEncode: number): Uint8Array {
   const lengthPrefix = 1 << (7 - continuationByteCount);
   // 计算第一个字节中用于存储数据负载的掩码
   const firstBytePayloadMask = (1 << (8 - encodedByteLength)) - 1;
-
   switch (encodedByteLength) {
     case 2: {
       // 2 字节编码 (值范围: 128 to 16383)
@@ -106,11 +105,14 @@ export function encodeVLQ_BE(valueToEncode: number): Uint8Array {
       );
     }
     case 8: {
+      /** 是否是负数 */
+      const isNegative = valueToEncode < 0 ? 128 : 0;
+      valueToEncode = isNegative ? -valueToEncode : valueToEncode;
       const high32Bits = Math.floor(valueToEncode / 4294967296);
       const low32Bits = valueToEncode >>> 0;
       return Uint8Array.of(
         lengthPrefix + ((high32Bits >>> 24) & 0xff),
-        (high32Bits >>> 16) & 0xff,
+        ((high32Bits >>> 16) & 0xff) + isNegative,
         (high32Bits >>> 8) & 0xff,
         high32Bits & 0xff,
         (low32Bits >>> 24) & 0xff,
