@@ -193,11 +193,16 @@ export function decodeVLQ_BE_ObjNum(
       return high32Bits * 0x100000000 + low32Bits;
     }
     case 8: {
+      /** 是否是负数 */
+      const isNegative = buffer[offset] >= 128;
       const high32Bits =
-        firstBytePayload * 0x1000000 + (buffer[offset] << 16) + (buffer[offset + 1] << 8) + buffer[offset + 2];
+        firstBytePayload * 0x1000000 +
+        ((isNegative ? buffer[offset] - 128 : buffer[offset]) << 16) +
+        (buffer[offset + 1] << 8) +
+        buffer[offset + 2];
       const low32Bits =
         buffer[offset + 3] * 0x1000000 + (buffer[offset + 4] << 16) + (buffer[offset + 5] << 8) + buffer[offset + 6];
-      return high32Bits * 0x100000000 + low32Bits;
+      return (isNegative ? -1 : 1) * (high32Bits * 0x100000000 + low32Bits);
     }
   }
   throw new Error("解码长度超出范围 [1, 8]");
