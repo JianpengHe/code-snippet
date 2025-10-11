@@ -3,12 +3,12 @@ const registerProcessorName = "audioInputOutput";
 const registerProcessorFn = String((registerProcessorName: string, blockSize: number) => {
   /** 播放缓存帧数，用于启动播放延迟 */
   const INITIAL_BUFFER_FRAMES = 40 * 128;
-  /** 自动调整最小帧数差（尽量缓存20帧再播放，延迟大约53毫秒） */
-  const MIN_DIFF_FRAME = 20 * 128;
-  /** 自动调整最大帧数差(约800ms) */
-  const MAX_DIFF_FRAME = 300 * 128;
-  /** 统计周期（4秒） */
-  const STATISTIC_CYCLE_FRAME = 1500 * 128;
+  /** 自动调整最小帧数差（尽量缓存25帧再播放，延迟大约66.6ms） */
+  const MIN_DIFF_FRAME = 25 * 128;
+  /** 自动调整最大帧数差(约1000ms) */
+  const MAX_DIFF_FRAME = 375 * 128;
+  /** 统计周期（6.4秒） */
+  const STATISTIC_CYCLE_FRAME = 2400 * 128;
   /** 最大抖动额外加上的帧 */
   const MAX_JITTER_ADD_FRAME = 5 * 128;
   //@ts-ignore
