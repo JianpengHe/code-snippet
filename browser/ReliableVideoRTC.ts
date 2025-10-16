@@ -353,6 +353,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
       const tracks: Set<MediaStreamTrack> = new Set();
       const frames: RTCEncodedFrame[] = [];
       const read = (receiver: RTCRtpReceiver) => {
+        const reliableTimestamp = new ReliableTimestamp();
         if (!receiver?.track) {
           this.log(receiver);
           throw new Error("not found: " + "transceiver?.receiver");
@@ -365,7 +366,7 @@ export class ReliableVideoRTC extends ReliableRTCPeerConnection {
           !ReliableVideoRTC.getFrames(receiver, data => {
             frames.push({
               type: data.type,
-              timestamp: data.timestamp,
+              timestamp: reliableTimestamp.format(data.timestamp),
               data: data.data,
               track: receiver.track,
               now: Math.floor(performance.now()),
@@ -594,3 +595,18 @@ async function checkAllCodecHardwareSupport() {
 
 // 执行检测函数
 checkAllCodecHardwareSupport();
+/** 修正时间戳，uint32的问题 */
+class ReliableTimestamp {
+  private maxTimestamp = 0;
+  private add = 0;
+  constructor(private readonly pow = 2147483648) {}
+  public format(timestamp = 0) {
+    timestamp += this.add;
+    if (timestamp + this.pow < this.maxTimestamp) {
+      timestamp += this.pow * 2;
+      this.add += this.pow * 2;
+    }
+    this.maxTimestamp = Math.max(this.maxTimestamp, timestamp);
+    return timestamp;
+  }
+}

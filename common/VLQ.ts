@@ -22,9 +22,8 @@
  */
 export function encodeVLQ_BE(valueToEncode: number): Uint8Array {
   // 校验输入数字是否在安全整数范围内
-  if (valueToEncode > Number.MAX_SAFE_INTEGER) {
+  if (!Number.isSafeInteger(valueToEncode))
     throw new RangeError("输入数字超出了安全整数范围 [0, Number.MAX_SAFE_INTEGER]");
-  }
 
   // 性能优化：最常见的情况是单字节编码（值 < 128）
   if (valueToEncode >= 0 && valueToEncode < 128) {
