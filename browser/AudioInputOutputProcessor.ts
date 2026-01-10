@@ -3,10 +3,10 @@ const registerProcessorName = "audioInputOutput";
 const registerProcessorFn = String((registerProcessorName: string, blockSize: number) => {
   /** 播放缓存帧数，用于启动播放延迟 */
   const INITIAL_BUFFER_FRAMES = 40 * 128;
-  /** 自动调整最小帧数差（尽量缓存25帧再播放，延迟大约66.6ms） */
-  const MIN_DIFF_FRAME = 25 * 128;
-  /** 自动调整最大帧数差(约1000ms) */
-  const MAX_DIFF_FRAME = 375 * 128;
+  /** 每次自动调整最小帧数差（尽量缓存30帧再播放，延迟大约83.3ms） */
+  const MIN_DIFF_FRAME = 30 * 128;
+  /** 每次自动调整最大帧数差(约266ms) */
+  const MAX_DIFF_FRAME = 100 * 128;
   /** 统计周期（6.4秒） */
   const STATISTIC_CYCLE_FRAME = 2400 * 128;
   /** 最大抖动额外加上的帧 */
@@ -99,6 +99,8 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
 
         // console.log(`当前缓存帧数: ${this.playbackBuffer.size}，延迟 ${(currentLatency / 48).toFixed(2)}ms`);
 
+        // 过期帧数量
+        let expiredFrameCount = 0;
         // 将数据按帧切片并缓存
         for (let i = 0; i < buffer.length; i += 128) {
           const chunk = buffer.slice(i, i + 128);
@@ -106,12 +108,15 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
 
           // 跳过已经播放过的帧
           if (chunkFrameIndex < this.currentPlayFrame) {
-            console.log("跳过过期帧");
+            // console.log("跳过过期帧");
+            expiredFrameCount++;
             continue;
           }
 
           this.playbackBuffer.set(chunkFrameIndex, chunk);
         }
+        expiredFrameCount && console.log("过期帧数量", expiredFrameCount);
+
         this.latestReceivedFrame = frameIndex;
         // 控制缓存大小（最多保留 300 帧）
         if (this.playbackBuffer.size > 3000) {

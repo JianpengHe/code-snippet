@@ -1,6 +1,9 @@
 type IWebSocketSendData = string | ArrayBufferLike | Blob | ArrayBufferView;
 const KeepDataIntegrityKey = "recvSize";
 export class ReliableWebSocket {
+  static isKeepDataIntegrity(data: IWebSocketSendData) {
+    return typeof data === "string" && data.startsWith(KeepDataIntegrityKey + "->");
+  }
   public url?: URL;
   public webSocket?: WebSocket;
   /** 待发送数据队列 */
@@ -44,8 +47,8 @@ export class ReliableWebSocket {
     if (this.keepDataIntegrity) {
       this.isReadyToSend = false;
       this.webSocket.addEventListener("message", e => {
-        if (typeof e.data === "string" && e.data.startsWith(KeepDataIntegrityKey + "->")) {
-          e.stopPropagation();
+        if (ReliableWebSocket.isKeepDataIntegrity(e.data)) {
+          // e.stopPropagation();
           const saveSize = Number(e.data.split("->")[1]);
 
           while (this.sentBufs.length > 0 && saveSize > this.sentSize) {
