@@ -1,300 +1,183 @@
 const registerProcessorName = "audioInputOutput";
 
-/**
- * AudioWorklet 注册函数
- * 通过字符串注入到 worklet 线程中执行
- */
 const registerProcessorFn = String((registerProcessorName: string, blockSize: number) => {
-  /** AudioWorklet 固定处理帧大小（Web Audio 规范规定） */
-  const FRAME_SIZE = 128;
-
-  /**
-   * =======================
-   * 播放 / 抖动控制参数
-   * =======================
-   */
-
-  /**
-   * 启动播放时的初始缓冲帧数
-   * 40 * 128 ≈ 5333 samples ≈ 111ms
-   *
-   * 用于：
-   * - 首次播放
-   * - 网络流重启后重新对齐
-   */
-  const INITIAL_BUFFER_FRAMES = 40 * FRAME_SIZE;
-
-  /**
-   * 触发播放时间轴调整的最小差值
-   * 小于该值认为是正常波动，不做调整
-   */
-  const MIN_DIFF_FRAME = 25 * FRAME_SIZE;
-
-  /**
-   * 单次允许向前追赶的最大帧数
-   * 防止一次性跳太多导致明显听感突变
-   */
-  const MAX_DIFF_FRAME = 100 * FRAME_SIZE;
-
-  /**
-   * 抖动统计周期
-   * 每累计这么多“网络时间轴推进量”后，进行一次延迟评估
-   */
-  const STATISTIC_CYCLE_FRAME = 2400 * FRAME_SIZE;
-
-  /**
-   * 在抖动基础上额外预留的安全帧
-   * 用于防止刚好追到边界又发生抖动
-   */
-  const MAX_JITTER_ADD_FRAME = 5 * FRAME_SIZE;
-
+  /** 播放缓存帧数，用于启动播放延迟 */
+  const INITIAL_BUFFER_FRAMES = 40 * 128;
+  /** 每次自动调整最小帧数差（尽量缓存30帧再播放，延迟大约83.3ms） */
+  const MIN_DIFF_FRAME = 30 * 128;
+  /** 每次自动调整最大帧数差(约266ms) */
+  const MAX_DIFF_FRAME = 100 * 128;
+  /** 统计周期（6.4秒） */
+  const STATISTIC_CYCLE_FRAME = 2400 * 128;
+  /** 最大抖动额外加上的帧 */
+  const MAX_JITTER_ADD_FRAME = 5 * 128;
   //@ts-ignore
   registerProcessor(
     registerProcessorName,
     //@ts-ignore
     class extends AudioWorkletProcessor {
-      /**
-       * 输入采集缓冲区
-       * 用于将多次 128 帧拼成一个 blockSize 再 postMessage
-       */
+      /** 采集缓存大小（对应一次 postMessage 的数据量） */
       private inputBuffer = new Float32Array(blockSize);
       private inputBufferIndex = 0;
 
-      /**
-       * 播放缓存
-       * key   : 帧编号（以 128 为单位对齐）
-       * value : 对应的 Float32Array(128)
-       */
+      /** 输出缓冲区，按帧编号缓存 Float32Array */
       private playbackBuffer = new Map<number, Float32Array>();
 
-      /**
-       * 当前播放到的帧编号（播放时间轴）
-       * 只允许向前推进，不允许回退
-       */
+      /** 当前播放到的帧编号 */
       private currentPlayFrame = Infinity;
 
-      /**
-       * 网络侧最近一次收到的帧编号
-       * 用于判断网络流是否重启
-       */
-      private latestNetworkFrame = 0;
+      /** 最近接收到的帧编号 */
+      private latestReceivedFrame = Infinity;
 
-      /**
-       * 网络侧“期望帧编号”
-       * 表示当前网络时间轴走到哪里
-       * ❗不在 process() 中推进
-       */
+      /** 期望收到的帧编号 */
       private latestExpectedFrame = 0;
 
-      /**
-       * 上一次计算得到的延迟
-       * 用于计算 jitter（延迟变化量）
-       */
-      private lastLatency = 0;
-
-      /**
-       * 当前统计周期内观测到的最大抖动
-       */
+      /** 网络抖动（一个统计周期内的最大网络抖动） */
       private maxObservedJitter = 0;
 
-      /**
-       * 抖动统计周期的起始帧
-       */
+      /** 统计延迟的起始帧编号 */
       private latencyStatStartFrame = 0;
-      /** 播放失同步连续计数 */
-      private desyncCount = 0;
 
-      /** 触发失同步修复的阈值 */
-      private readonly DESYNC_THRESHOLD = 5;
       constructor() {
         super();
         //@ts-ignore
         this.port.onmessage = this.handleIncomingBuffer.bind(this);
       }
 
-      /**
-       * 接收主线程送来的播放数据（网络 / 回环音频）
-       */
+      /** 接收主线程发送的音频数据并缓存 */
       private handleIncomingBuffer({ data }: MessageEvent) {
         const buffer: Float32Array = data.buffer;
+        const frameIndex: number = Math.ceil(data.frameIndex / 128) * 128;
 
-        /**
-         * 将帧编号强制对齐到 128
-         * 确保和 AudioWorklet 的 process 节拍一致
-         */
-        const frameIndex = Math.floor(data.frameIndex / FRAME_SIZE) * FRAME_SIZE;
-
-        /**
-         * ===== 初始化播放时间轴 =====
-         * 第一次收到数据时，建立播放起点
-         * 向后预留 INITIAL_BUFFER_FRAMES 作为启动缓存
-         */
-        if (this.currentPlayFrame === Infinity) {
-          this.currentPlayFrame = frameIndex - INITIAL_BUFFER_FRAMES;
-          this.latestExpectedFrame = frameIndex;
-          this.latencyStatStartFrame = frameIndex;
-        }
-        /**
-         * ===== 播放时间轴失同步检测（温和版）=====
-         *
-         * 判断条件：
-         * 1. 即使加上启动缓冲，网络帧仍明显落后于播放帧
-         * 2. 连续多次出现该情况
-         */
-        if (frameIndex + INITIAL_BUFFER_FRAMES < this.currentPlayFrame) {
-          this.desyncCount++;
-        } else {
-          this.desyncCount = 0;
-        }
-
-        /**
-         * 连续多次确认失同步，才认为播放源已换代
-         */
-        if (this.desyncCount >= this.DESYNC_THRESHOLD) {
-          console.log("播放时间轴失同步修复", frameIndex + INITIAL_BUFFER_FRAMES, this.currentPlayFrame);
+        // 如果收到的是旧数据，说明发生了重启
+        if (frameIndex < this.latestReceivedFrame) {
+          console.warn("音频流重启，清空播放缓存");
           this.playbackBuffer.clear();
           this.currentPlayFrame = frameIndex - INITIAL_BUFFER_FRAMES;
-          this.latestExpectedFrame = frameIndex;
-          this.latencyStatStartFrame = frameIndex;
+          this.latencyStatStartFrame = 0;
           this.maxObservedJitter = 0;
-          this.lastLatency = 0;
-          this.desyncCount = 0;
+          this.latestExpectedFrame = 0;
         }
-        /**
-         * ===== 网络流重启检测 =====
-         * 如果帧编号倒退，认为网络流被重置
-         */
-        if (frameIndex < this.latestNetworkFrame) {
-          this.playbackBuffer.clear();
-          this.currentPlayFrame = frameIndex - INITIAL_BUFFER_FRAMES;
-          this.latestExpectedFrame = frameIndex;
-          this.latencyStatStartFrame = frameIndex;
-          this.maxObservedJitter = 0;
-          this.lastLatency = 0;
-        }
-
-        this.latestNetworkFrame = frameIndex;
         this.latestExpectedFrame = Math.max(this.latestExpectedFrame, frameIndex);
 
-        /**
-         * ===== 延迟 / 抖动计算 =====
-         *
-         * 延迟 = 网络时间轴 - 播放时间轴
-         * 抖动 = 延迟的变化量
-         */
-        const latency = this.latestExpectedFrame - this.currentPlayFrame;
-        const jitter = Math.abs(latency - this.lastLatency);
-        this.lastLatency = latency;
-        this.maxObservedJitter = Math.max(this.maxObservedJitter, jitter);
+        // 统计播放延迟
+        const currentLatency = this.latestExpectedFrame - frameIndex;
+        this.maxObservedJitter = Math.max(this.maxObservedJitter, currentLatency);
 
-        /**
-         * ===== 周期性自动追帧 =====
-         * 每经过一个统计周期，根据抖动情况决定是否需要缩短延迟
-         */
         if (this.latestExpectedFrame - this.latencyStatStartFrame > STATISTIC_CYCLE_FRAME) {
-          /**
-           * 理想的播放帧位置：
-           * 网络最新帧 -（抖动 + 安全帧）
-           */
+          // 如果延迟超过一定阈值，则向前跳过部分帧，降低延迟
           let expectPlayFrame =
             this.latestExpectedFrame - (Math.min(MAX_DIFF_FRAME, this.maxObservedJitter) + MAX_JITTER_ADD_FRAME);
-
           const diff = expectPlayFrame - this.currentPlayFrame;
-
-          /**
-           * 只有当差值超过最小阈值，才进行调整
-           */
-          if (Math.abs(diff) > MIN_DIFF_FRAME && diff > 0) {
-            /**
-             * 控制追帧幅度，避免一次跳太多
-             */
-            const advance =
-              diff > MIN_DIFF_FRAME * 2 ? diff - MIN_DIFF_FRAME : Math.floor(diff / FRAME_SIZE / 2) * FRAME_SIZE;
-
-            const newPlayFrame = this.currentPlayFrame + advance;
-
-            /**
-             * 删除被跳过的缓存帧
-             */
-            for (let i = this.currentPlayFrame; i < newPlayFrame; i += FRAME_SIZE) {
-              this.playbackBuffer.delete(i);
+          console.log("网络抖动", (this.maxObservedJitter / 48).toFixed(2), "ms", (diff / 48).toFixed(2));
+          if (Math.abs(expectPlayFrame - this.currentPlayFrame) > MIN_DIFF_FRAME) {
+            if (diff > 0) {
+              expectPlayFrame =
+                this.currentPlayFrame +
+                (diff > MIN_DIFF_FRAME * 2 ? diff - MIN_DIFF_FRAME : Math.floor(diff / 128 / 2) * 128);
+              // 播放速度过快，需要提前播放
+              for (let i = this.currentPlayFrame; i < expectPlayFrame; i += 128) {
+                this.playbackBuffer.delete(i);
+              }
             }
+            console.log(
+              diff > 0 ? "缩短延迟" : "",
+              "调整",
+              "当前缓存块数",
+              this.playbackBuffer.size,
+              "最大可调节",
+              diff / 128,
+              "本次调节",
+              (expectPlayFrame - this.currentPlayFrame) / 128
+            );
+            this.currentPlayFrame = expectPlayFrame;
+          }
+          this.latestExpectedFrame = frameIndex;
+          this.maxObservedJitter = 0;
+          this.latencyStatStartFrame = this.latestExpectedFrame;
+        }
 
-            this.currentPlayFrame = newPlayFrame;
+        // console.log(`当前缓存帧数: ${this.playbackBuffer.size}，延迟 ${(currentLatency / 48).toFixed(2)}ms`);
+
+        // 过期帧数量
+        let expiredFrameCount = 0;
+        // 将数据按帧切片并缓存
+        for (let i = 0; i < buffer.length; i += 128) {
+          const chunk = buffer.slice(i, i + 128);
+          const chunkFrameIndex = frameIndex + i;
+
+          // 跳过已经播放过的帧
+          if (chunkFrameIndex < this.currentPlayFrame) {
+            // console.log("跳过过期帧");
+            expiredFrameCount++;
+            continue;
           }
 
-          /**
-           * 重置统计周期
-           */
-          this.latencyStatStartFrame = this.latestExpectedFrame;
-          this.maxObservedJitter = 0;
+          this.playbackBuffer.set(chunkFrameIndex, chunk);
         }
+        expiredFrameCount && console.log("过期帧数量", expiredFrameCount);
 
-        /**
-         * ===== 缓存音频数据 =====
-         * 按 128 帧切片存入播放缓存
-         */
-        for (let i = 0; i < buffer.length; i += FRAME_SIZE) {
-          const chunkFrame = frameIndex + i;
-          if (chunkFrame < this.currentPlayFrame) continue;
-          this.playbackBuffer.set(chunkFrame, buffer.subarray(i, i + FRAME_SIZE));
-        }
-
-        /**
-         * 防止缓存无限增长（兜底保护）
-         */
+        this.latestReceivedFrame = frameIndex;
+        // 控制缓存大小（最多保留 300 帧）
         if (this.playbackBuffer.size > 3000) {
-          this.playbackBuffer.clear();
+          // console.log([...this.playbackBuffer.keys()]);
+          console.warn("播放缓存过大，执行裁剪");
+          this.latestReceivedFrame = Infinity;
+          // return;
+          // const sortedKeys = [...this.playbackBuffer.keys()].sort((a, b) => a - b);
+          // const excess = sortedKeys.length - 1000;
+          // for (let i = 0; i < excess; i++) {
+          //   this.playbackBuffer.delete(sortedKeys[i]);
+          // }
         }
       }
 
-      /**
-       * AudioWorklet 实时处理函数
-       * 每次调用固定处理 128 帧
-       */
+      /** 每一帧执行：录音 + 播放 */
       process(inputs: Float32Array[][], outputs: Float32Array[][]) {
-        const inputData = inputs[0]?.[0];
+        const inputData = inputs[0][0];
 
-        /**
-         * ===== 录音采集 =====
-         * 拼接成 blockSize 再发回主线程
-         */
+        // 采集输入缓冲写入 inputBuffer
         if (inputData) this.inputBuffer.set(inputData, this.inputBufferIndex);
-        this.inputBufferIndex += FRAME_SIZE;
+        this.inputBufferIndex += 128;
 
+        // 填满后发送给主线程
         if (this.inputBufferIndex === this.inputBuffer.length) {
           //@ts-ignore
           this.port.postMessage({
             buffer: this.inputBuffer,
-            lastReceivedFrame: this.latestNetworkFrame,
+            lastReceivedFrame: this.latestReceivedFrame,
             currentPlayFrame: this.currentPlayFrame,
             playbackBufferSize: this.playbackBuffer.size,
             maxObservedJitter: this.maxObservedJitter,
             // @ts-ignore
             sampleRate,
+            // t: JSON.stringify({
+            //   inputs: inputs.map(a => a.map(b => b.length)),
+            //   outputs: outputs.map(a => a.map(b => b.length)),
+            // }),
           });
           this.inputBufferIndex = 0;
         }
 
-        /**
-         * ===== 播放 =====
-         * 根据当前播放时间轴取出对应帧
-         */
+        // 播放：取出对应帧
         const chunk = this.playbackBuffer.get(this.currentPlayFrame);
 
         if (chunk) {
           for (const output of outputs[0]) output.set(chunk);
         } else {
-          // 丢帧时输出静音，但播放时间轴仍然前进
+          // console.log("丢帧", this.playbackBuffer.size);
           for (const output of outputs[0]) output.fill(0);
+          if (this.playbackBuffer.size === 0) {
+            this.playbackBuffer.set(this.currentPlayFrame, new Float32Array(128));
+            this.currentPlayFrame -= 128;
+            // this.latestReceivedFrame = Infinity;
+          }
         }
 
-        /**
-         * 播放完成后推进播放时间轴
-         */
+        // 清理当前帧数据
         this.playbackBuffer.delete(this.currentPlayFrame);
-        this.currentPlayFrame += FRAME_SIZE;
-
+        this.currentPlayFrame += 128;
+        this.latestExpectedFrame += 128;
         return true;
       }
     }
@@ -305,7 +188,6 @@ export class AudioInputOutputProcessor {
   public readonly audioContext: AudioContext;
   public audioNode?: AudioWorkletNode;
   public readonly initing: Promise<void>;
-
   constructor(
     mediaStream?: MediaStream,
     blockSize = 512,
@@ -315,35 +197,42 @@ export class AudioInputOutputProcessor {
   ) {
     this.audioContext = ctx;
 
+    // 创建音频处理工作线程
     const objectUrl = URL.createObjectURL(
       new Blob([`(${registerProcessorFn})("${registerProcessorName}",${blockSize})`], {
         type: "application/javascript; charset=utf-8",
       })
     );
-
     this.initing = ctx.audioWorklet.addModule(objectUrl);
-    this.initing.finally(() => URL.revokeObjectURL(objectUrl));
-
+    this.initing?.finally?.(() => URL.revokeObjectURL(objectUrl));
     this.initing.then(() => {
       this.audioNode = new AudioWorkletNode(ctx, registerProcessorName);
       if (mediaStream) ctx.createMediaStreamSource(mediaStream).connect(this.audioNode);
       this.audioNode.connect(ctx.destination);
-      this.audioNode.port.onmessage = ({ data }) =>
+      this.audioNode.port.onmessage = ({
+        data: { buffer, lastReceivedFrame, currentPlayFrame, playbackBufferSize, maxObservedJitter, sampleRate },
+      }) =>
         this.onInputData(
-          data.buffer,
-          data.lastReceivedFrame,
-          data.currentPlayFrame,
-          data.playbackBufferSize,
-          data.maxObservedJitter,
-          data.sampleRate
+          buffer,
+          lastReceivedFrame,
+          currentPlayFrame,
+          playbackBufferSize,
+          maxObservedJitter,
+          sampleRate
         );
     });
+    this.initing.catch(e => alert(e));
 
-    const resume = () => ctx.resume();
-    window.addEventListener("click", resume, { once: true });
+    const fn = () => {
+      ctx.resume();
+      if (!document.hidden) navigator.wakeLock.request("screen");
+    };
+    window.addEventListener("click", fn, { once: true });
+    window.addEventListener("visibilitychange", fn);
+    ctx.addEventListener("statechange", fn);
   }
 
-  // 可由外部覆盖
+  // overwrite
   public onInputData(
     buffer: Float32Array,
     lastReceivedFrame: number,
@@ -352,20 +241,9 @@ export class AudioInputOutputProcessor {
     maxObservedJitter: number,
     sampleRate: number
   ) {
-    console.log(
-      "onInputData",
-      buffer,
-      lastReceivedFrame,
-      currentPlayFrame,
-      playbackBufferSize,
-      maxObservedJitter,
-      sampleRate
-    );
+    console.log("onInputData", buffer, lastReceivedFrame, currentPlayFrame, playbackBufferSize, maxObservedJitter);
   }
 
-  /**
-   * 主线程向 AudioWorklet 推送播放数据
-   */
   public pushOutputData(buffer: Float32Array, frameIndex: number) {
     this.audioNode?.port.postMessage({ frameIndex, buffer });
   }
