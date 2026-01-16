@@ -24,31 +24,25 @@ export const fetchWithProgress: FetchWithProgress = async (input, init = {}, onP
   const reader = response.body.getReader();
   let loaded = 0;
   let isStop = false;
+  let RAFid: number | null = null;
   const RAF = () => {
+    if (init.signal?.aborted) return;
     onProgress({
       loaded,
       total,
       percent: total ? loaded / total : null,
     });
-    if (!isStop) requestAnimationFrame(RAF);
+    RAFid = isStop ? null : requestAnimationFrame(RAF);
   };
 
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        requestAnimationFrame(RAF);
-        while (true) {
+        RAFid = requestAnimationFrame(RAF);
+        while (!init.signal?.aborted) {
           const { done, value } = await reader.read();
           if (done) break;
-
           loaded += value.byteLength;
-
-          //   onProgress({
-          //     loaded,
-          //     total,
-          //     percent: total ? loaded / total : null,
-          //   });
-
           controller.enqueue(value);
         }
       } catch (err) {
@@ -57,7 +51,9 @@ export const fetchWithProgress: FetchWithProgress = async (input, init = {}, onP
         controller.close();
         reader.releaseLock();
         isStop = true;
-        RAF();
+        if (RAFid) cancelAnimationFrame(RAFid);
+        RAFid = null;
+        // RAF();
       }
     },
   });
