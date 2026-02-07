@@ -11,9 +11,21 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       private inputBufferIndex = 0;
       private inputBufferSamplePerProcess = 128;
 
+      /** 输出缓冲队列 */
       private outputBuffer: Float32Array[] = [];
       private outputBufferSampleCount = 0;
-      private outputBufferPlaySpeed = 1;
+
+      /** 播放控制 */
+      private outputPlaySpeed = 1;
+      private outputPlayedSampleCount = 0;
+
+      private readonly playSpeedx1SampleCount = 4800;
+      private readonly playSpeedx2SampleCount = 48000 * 5;
+
+      /** ===== 倍速播放跨 process 状态 ===== */
+      private speedPhase = 0; // 相位（浮点）
+      private speedPrevSample = 0; // 上一个 buffer 的最后一个样本
+      private speedHasPrev = false;
 
       constructor() {
         super();
@@ -24,6 +36,20 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           this.outputBuffer.push(buffer);
           this.outputBufferSampleCount += buffer.length;
         };
+      }
+
+      private getPlaySpeed() {
+        if (this.outputPlayedSampleCount < this.playSpeedx1SampleCount) {
+          return 1;
+        }
+        if (this.outputPlayedSampleCount > this.playSpeedx2SampleCount) {
+          return 2;
+        }
+        return (
+          1 +
+          (this.outputPlayedSampleCount - this.playSpeedx1SampleCount) /
+            (this.playSpeedx2SampleCount - this.playSpeedx1SampleCount)
+        );
       }
 
       /** 每128个样本执行：录音 + 播放 */
@@ -63,7 +89,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
               // @ts-ignore
               sampleRate,
               outputSampleCount: this.outputBufferSampleCount,
-              outputPlaySpeed: this.outputBufferPlaySpeed,
+              outputPlaySpeed: this.outputPlaySpeed,
             },
             [bufferToSend.buffer]
           );
@@ -74,14 +100,16 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           this.inputBufferIndex = 0;
         }
 
-        // 播放输出缓冲到输出源
+        /** ---------- 播放输出 ---------- */
         const output = outputs[0];
         /** 输出缓存大小（对应一次 postMessage 的数据量） */
         const outputSampleCount = output[0].length;
 
-        // TODO: 调整播放速度
+        // this.outputPlaySpeed = this.getPlaySpeed();
+        this.outputPlayedSampleCount += outputSampleCount;
 
-        if (this.outputBufferPlaySpeed === 1) {
+        /** 1 倍速：直拷贝 */
+        if (this.outputPlaySpeed === 1) {
           /** 已写入输出缓存的样本数 */
           let writedSampleCount = 0;
           let buffer: Float32Array | undefined = undefined;
@@ -113,6 +141,8 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           return true;
         }
 
+        /** 1~2 倍速 */
+        // this.playOtherSpeed(output);
         return true;
       }
     }
