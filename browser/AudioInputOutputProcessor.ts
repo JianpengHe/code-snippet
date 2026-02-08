@@ -9,77 +9,82 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       // ==========================================
       // 基础配置
       // ==========================================
+      /** 当前 AudioWorklet 的采样率（兜底 48k） */
       //@ts-ignore
       private readonly sampleRate = sampleRate || 48000;
 
       // ==========================================
       // 录音部分 (Mic -> Main Thread)
       // ==========================================
-      /** 录音缓冲：用于积攒足够的音频数据后发送给主线程 */
-      private inputBuffer = new Float32Array(blockSize);
-      /** 录音缓冲当前的写入位置 */
-      private inputBufferIndex = 0;
-      /** 单次处理过程中的样本数 (通常是 128) */
-      private processChunkSize = 128;
+      /** 录音缓冲区：累计到一定大小后发送给主线程 */
+      private recordBuffer = new Float32Array(blockSize);
+      /** 当前录音缓冲区写入位置 */
+      private recordWriteIndex = 0;
+      /** 单次 process 回调内的样本数（通常为 128） */
+      private processFrameSize = 128;
 
       // ==========================================
       // 播放部分 (Main Thread -> Speaker)
       // ==========================================
-      /** 播放队列：存放从网络/主线程接收到的音频块 (Jitter Buffer) */
-      private outputBuffer: Float32Array[] = [];
-      /** 当前播放队列中剩余的总样本数 */
-      private outputBufferSampleCount = 0;
+      /** 播放队列（抖动缓冲）：存放来自主线程的音频块 */
+      private outputBufferQueue: Float32Array[] = [];
+      /** 播放队列中剩余的总样本数 */
+      private outputBufferQueueSampleCount = 0;
 
-      /** 当前播放倍速 (1.0 = 正常, >1.0 = 加速追帧) */
-      private currentPlaybackRate = 1;
-      /** 累计已播放的样本数 */
-      private totalPlayedSamples = 0;
+      /** 当前播放速率对应的“读取样本数”（以 128 为 1x） */
+      private currentReadSamplesPerFrame = this.processFrameSize;
+      /** 累计已播放的样本数（统计用途） */
+      private totalOutputSamples = 0;
 
       // ==========================================
       // 自适应缓冲控制 (Adaptive Buffer Control)
       // ==========================================
-      /** 最小安全缓冲阈值 (80ms)，低于此值可能导致卡顿 */
-      private readonly minSafeBufferSize = this.sampleRate * 0.08;
+      /** 最小安全缓冲阈值（80ms），低于此值可能发生卡顿 */
+      private readonly minSafeBufferSamples = this.sampleRate * 0.08;
 
-      /** 动态目标缓冲大小：根据网络抖动情况自动调整 */
-      private dynamicTargetBufferSize = this.sampleRate * 0.1;
+      /** 动态目标缓冲大小（根据网络抖动自动调整） */
+      private targetBufferSamples = this.sampleRate * 0.1;
 
-      /** 追帧阈值：当缓冲超过此值 (5秒) 时，强制 2倍速播放以快速消耗积压 */
-      private readonly panicThresholdSamples = this.sampleRate * 5;
+      /** 极端积压阈值（5 秒），超过后强制 2 倍速追帧 */
+      private readonly panicBufferSamples = this.sampleRate * 5;
 
-      /** 稳定运行的持续时间 (样本数)，用于判断网络质量 */
-      private stableDurationSamples: number = 0;
+      /** 连续稳定运行的样本数（用于评估网络质量） */
+      private stableRunningSamples = 0;
 
       // ==========================================
-      // 预测与平滑算法参数
+      // 预测与平滑控制参数
       // ==========================================
-      /** 预测节流：每隔 6 秒 (对应采样率) 重新计算一次目标缓冲大小 */
+      /** 预测周期：每隔一定样本数重新计算目标缓冲 */
       private readonly PREDICT_INTERVAL_SAMPLES = this.sampleRate * 3;
       /** 距离上次预测经过的样本数 */
-      private samplesSinceLastPredict = 0;
+      private samplesSinceLastPrediction = 0;
 
-      /** 低通滤波器系数 (Alpha)，用于重采样时的平滑处理 */
-      private readonly lowPassAlpha: number;
+      // ==========================================
+      // 二阶低通滤波器状态（Direct Form I）
+      // ==========================================
+      private lpfInput1 = 0;
+      private lpfInput2 = 0;
+      private lpfOutput1 = 0;
+      private lpfOutput2 = 0;
 
+      /** 当前低通滤波器系数（随 speed 动态更新） */
+      private lpf_b0 = 0;
+      private lpf_b1 = 0;
+      private lpf_b2 = 0;
+      private lpf_a1 = 0;
+      private lpf_a2 = 0;
       constructor() {
         super();
 
-        // --- 消息监听：接收主线程传来的音频数据 ---
+        // ===============================
+        // 接收主线程推送的播放数据
+        // ===============================
         //@ts-ignore
         this.port.onmessage = ({ data }: MessageEvent) => {
-          const chunk: Float32Array = data.buffer;
-          // 将数据推入播放队列
-          this.outputBuffer.push(chunk);
-          this.outputBufferSampleCount += chunk.length;
+          const audioChunk: Float32Array = data.buffer;
+          this.outputBufferQueue.push(audioChunk);
+          this.outputBufferQueueSampleCount += audioChunk.length;
         };
-
-        // --- 初始化低通滤波器 (RC Low-pass Filter) ---
-        // 用于消除重采样（加速播放）时产生的高频混叠噪音
-        const cutoffFreq = 12000; // 截止频率 12kHz (人声保留范围)
-        // RC 低通公式
-        const dt = 1 / this.sampleRate;
-        const RC = 1 / (2 * Math.PI * cutoffFreq);
-        this.lowPassAlpha = dt / (RC + dt);
       }
 
       /**
@@ -88,67 +93,63 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
        * 1. 运行越稳定 (stableDurationSamples 越大)，目标缓冲越小 (追求低延迟)。
        * 2. 缓冲积压越多，越需要加速播放。
        */
-      private updateTargetBufferSize() {
+      private updateTargetBufferSamples() {
         // 节流：未到预测时间点则跳过
-        if (this.samplesSinceLastPredict < this.PREDICT_INTERVAL_SAMPLES) {
+        if (this.samplesSinceLastPrediction < this.PREDICT_INTERVAL_SAMPLES) {
           return;
         }
-        this.samplesSinceLastPredict = 0;
+        this.samplesSinceLastPrediction = 0;
 
-        const currentBuffered = this.outputBufferSampleCount;
+        const bufferedSamples = this.outputBufferQueueSampleCount;
 
-        // 1. 安全保护：如果当前缓冲严重不足，直接重置目标为最小安全值，防止过度激进
-        if (currentBuffered <= this.minSafeBufferSize) {
-          this.dynamicTargetBufferSize = this.minSafeBufferSize;
+        // 缓冲严重不足时，直接回退到最小安全值
+        if (bufferedSamples <= this.minSafeBufferSamples) {
+          this.targetBufferSamples = this.minSafeBufferSamples;
           return;
         }
-
-        // 2. 计算缩减比率
+        // 计算缩减比率
         // 稳定半衰期：约 10秒
         const STABLE_HALF_LIFE = this.sampleRate * 1;
-        const MAX_REDUCE_RATIO = 0.8; // 最大允许减少 80% 的缓冲
-        const SAFE_MARGIN = this.minSafeBufferSize;
+        const MAX_REDUCE_RATIO = 0.8;
+        const SAFE_MARGIN = this.minSafeBufferSamples;
 
-        // 稳定因子：运行越久越接近 1
-        const stabilityFactor = 1 - Math.exp(-this.stableDurationSamples / STABLE_HALF_LIFE);
+        // 稳定因子：运行越久，越接近 1
+        const stabilityFactor = 1 - Math.exp(-this.stableRunningSamples / STABLE_HALF_LIFE);
 
-        // 安全因子：缓冲余量越充足越接近 1
-        const excessBuffer = currentBuffered - this.minSafeBufferSize;
-        const safetyFactor = excessBuffer >= SAFE_MARGIN ? 1 : excessBuffer / SAFE_MARGIN;
+        // 安全因子：缓冲余量越充足，越接近 1
+        const excess = bufferedSamples - this.minSafeBufferSamples;
+        const safetyFactor = excess >= SAFE_MARGIN ? 1 : excess / SAFE_MARGIN;
 
         // 综合缩减比率
         const reduceRatio = MAX_REDUCE_RATIO * stabilityFactor * safetyFactor;
 
         // 计算建议的新缓冲大小
-        const suggestedBufferSize = this.dynamicTargetBufferSize - currentBuffered * (1 - reduceRatio);
+        const suggested = this.targetBufferSamples - bufferedSamples * (1 - reduceRatio);
 
-        // 3. 限制范围：[最小安全值, 1秒数据量]
-        this.dynamicTargetBufferSize = Math.min(Math.max(suggestedBufferSize, this.minSafeBufferSize), this.sampleRate);
+        // 限制在 [最小安全值, 1 秒]
+        this.targetBufferSamples = Math.min(Math.max(suggested, this.minSafeBufferSamples), this.sampleRate);
       }
 
       /**
-       * 计算当前需要的播放倍速
-       * @returns 播放倍率 (1.0 ~ 2.0)
+       * 计算当前应使用的播放速率
        */
-      private calculatePlaybackRate(): number {
-        // 情况 A: 积压极其严重 -> 2倍速全速追赶
-        if (this.outputBufferSampleCount > this.panicThresholdSamples) {
-          return 2;
-        }
+      private calculateReadSamplesPerFrame(): number {
+        // 极端积压：直接 2 倍速
+        if (this.outputBufferQueueSampleCount > this.panicBufferSamples) return this.processFrameSize * 2;
 
         // 更新目标缓冲水位线
-        this.updateTargetBufferSize();
+        this.updateTargetBufferSamples();
 
-        const targetSize = this.dynamicTargetBufferSize;
+        // 缓冲健康：正常 1 倍速
+        if (this.outputBufferQueueSampleCount < this.targetBufferSamples) return this.processFrameSize;
 
-        // 情况 B: 缓冲处于健康水位 -> 1倍速正常播放
-        if (this.outputBufferSampleCount < targetSize) {
-          return 1;
-        }
+        // 缓冲偏多 -> 线性插值计算加速倍率 (1.0 ~ 2.0 之间平滑过渡)
+        const speedFactor =
+          1 +
+          (this.outputBufferQueueSampleCount - this.targetBufferSamples) /
+            (this.panicBufferSamples - this.targetBufferSamples);
 
-        // 情况 C: 缓冲偏多 -> 线性插值计算加速倍率 (1.0 ~ 2.0 之间平滑过渡)
-        // 缓冲越多，速度越快
-        return 1 + (this.outputBufferSampleCount - targetSize) / (this.panicThresholdSamples - targetSize);
+        return Math.round(this.processFrameSize * speedFactor);
       }
 
       /**
@@ -157,24 +158,24 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
        */
       process(inputs: Float32Array[][], outputs: Float32Array[][]): true {
         // ==========================================
-        // 1. 录音处理 (Input -> Buffer)
+        // 1. 录音处理（Input -> recordBuffer）
         // ==========================================
-        const inputData = inputs[0] ? inputs[0][0] : null;
+        const inputData = inputs[0]?.[0] ?? null;
         // 采集输入缓冲写入 inputBuffer
         if (inputData?.length) {
           // 将当前process音频数据写入大缓存
-          this.inputBuffer.set(inputData, this.inputBufferIndex);
+          this.recordBuffer.set(inputData, this.recordWriteIndex);
           // 更新当前process音频数据长度
-          this.processChunkSize = inputData.length;
+          this.processFrameSize = inputData.length;
         } else {
           // 如果没有输入，填充静音，否则缓冲区会保留上一轮的脏数据
           // this.inputBuffer.fill(0, this.inputBufferIndex, this.inputBufferIndex + this.inputBufferSamplePerProcess);
         }
         // 更新当前process音频数据索引
-        this.inputBufferIndex += this.processChunkSize;
+        this.recordWriteIndex += this.processFrameSize;
 
-        // 录音缓存填满，发送给主线程
-        if (this.inputBufferIndex >= this.inputBuffer.length) {
+        // 录音缓冲满，发送给主线程
+        if (this.recordWriteIndex >= this.recordBuffer.length) {
           //@ts-ignore
           // this.port.postMessage({
           //   buffer: this.inputBuffer.slice(),
@@ -183,7 +184,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           // });
           // this.inputBufferIndex = 0;
           // 1. 获取要发送的数据块
-          const bufferToSend = this.inputBuffer;
+          const bufferToSend = this.recordBuffer;
           // 2. 发送，并利用第二个参数声明“转移所有权”
           // 注意：转移的是 ArrayBuffer，而不是 Float32Array 视图
           //@ts-ignore
@@ -192,186 +193,225 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
               buffer: bufferToSend,
               sampleRate: this.sampleRate,
               // 附带当前的播放状态供调试/监控
-              outputSampleCount: this.outputBufferSampleCount,
-              outputPlaySpeed: this.currentPlaybackRate,
-              stableSamples: this.stableDurationSamples,
-              playSpeedx1SampleCount: this.dynamicTargetBufferSize,
+              outputSampleCount: this.outputBufferQueueSampleCount,
+              outputPlaySpeed: this.currentReadSamplesPerFrame,
+              stableSamples: this.stableRunningSamples,
+              playSpeedx1SampleCount: this.targetBufferSamples,
             },
             // 零拷贝转移所有权 (Transferable Objects)
             [bufferToSend.buffer]
           );
-
           // 3. 此时 bufferToSend.buffer 已经在当前线程不可用了（变成 0 字节）
           // 我们需要重新分配一个新的容器
-          this.inputBuffer = new Float32Array(blockSize);
-          this.inputBufferIndex = 0;
+          this.recordBuffer = new Float32Array(blockSize);
+          this.recordWriteIndex = 0;
         }
 
         // ==========================================
-        // 2. 播放处理 (Buffer -> Output)
+        // 2. 播放处理（Queue -> Output）
         // ==========================================
-        const output = outputs[0];
+        const outputChannels = outputs[0];
         /** 输出缓存大小（对应一次 postMessage 的数据量） */
-        const requiredOutputSamples = output[0].length;
+        const frameOutputSamples = outputChannels[0].length;
 
-        // 稳定运行时间
-        this.stableDurationSamples += requiredOutputSamples;
+        /** 稳定运行时间（用于计算播放速率） */
+        this.stableRunningSamples += frameOutputSamples;
         // 预测节流计时
-        this.samplesSinceLastPredict += requiredOutputSamples;
+        this.samplesSinceLastPrediction += frameOutputSamples;
         // 计算播放速度
-        this.currentPlaybackRate = this.calculatePlaybackRate();
-        this.totalPlayedSamples += requiredOutputSamples;
+        this.currentReadSamplesPerFrame = this.calculateReadSamplesPerFrame();
+        this.totalOutputSamples += frameOutputSamples;
 
-        /** 策略 A：1倍速 (直接内存拷贝，最高效) */
-        if (this.currentPlaybackRate < (requiredOutputSamples + 1) / requiredOutputSamples) {
-          let samplesWritten = 0;
+        // ===== 策略 A：1x 直接拷贝 =====
+        if (this.currentReadSamplesPerFrame === this.processFrameSize) {
+          let written = 0;
           let buffer: Float32Array | undefined;
           // 循环从队列头部取数据填充输出
-          while (this.outputBufferSampleCount > 0 && (buffer = this.outputBuffer[0])) {
+          while (this.outputBufferQueueSampleCount > 0 && (buffer = this.outputBufferQueue[0])) {
             /** 计算当前块能写入多少数据（剩余空间 vs 当前块长度） */
-            const remainingSpace = requiredOutputSamples - samplesWritten;
-            if (remainingSpace < buffer.length) {
+            const remaining = frameOutputSamples - written;
+
+            if (remaining < buffer.length) {
               // 当前块数据比剩余空间多 -> 切割，填满输出，剩下的放回去
-              this.outputBuffer[0] = buffer.subarray(remainingSpace); // 保留剩余部分
-              buffer = buffer.subarray(0, remainingSpace);
+              this.outputBufferQueue[0] = buffer.subarray(remaining); // 保留剩余部分
+              buffer = buffer.subarray(0, remaining);
             } else {
-              this.outputBuffer.shift(); // 移除已处理的块
+              this.outputBufferQueue.shift(); // 移除已处理的块
             }
             // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
-            for (const channel of output) channel.set(buffer, samplesWritten);
-            samplesWritten += buffer.length;
-            this.outputBufferSampleCount -= buffer.length;
+            for (const ch of outputChannels) ch.set(buffer, written);
+
+            written += buffer.length;
+            this.outputBufferQueueSampleCount -= buffer.length;
             // 如果填满了，就跳出
-            if (samplesWritten >= requiredOutputSamples) return true;
+            if (written >= frameOutputSamples) return true;
           }
 
           /**  如果数据不够填满一帧（例如网络卡顿），剩余部分补 0（静音） */
-          const samplesMissing = requiredOutputSamples - samplesWritten;
-          if (samplesMissing > 0) {
+          if (written < frameOutputSamples) {
             // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
-            for (const channel of output) channel.fill(0, samplesWritten);
+            for (const ch of outputChannels) ch.fill(0, written);
 
-            // 发生卡顿，重置稳定性计数
-            this.stableDurationSamples = 0;
+            this.stableRunningSamples = 0;
             // this.samplesSinceLastPredict = this.PREDICT_INTERVAL_SAMPLES; // 立即触发下一次预测
-            this.dynamicTargetBufferSize = Math.min(
-              this.dynamicTargetBufferSize + this.sampleRate * 0.005,
-              this.sampleRate
-            );
-            this.samplesSinceLastPredict = 0; // 反而要重置，给新水位一点时间观察
+            this.targetBufferSamples = Math.min(this.targetBufferSamples + this.sampleRate * 0.005, this.sampleRate);
+            this.samplesSinceLastPrediction = 0;
           }
           // 返回 true 保持处理器存活
           return true;
         }
 
         /** 策略 B：变速播放 (1.x ~ 2.0 倍速，需重采样) */
-        this.resampleAndPlay(output);
+        this.resampleAndOutput(outputChannels);
         return true;
+      }
+      /**
+       * 根据当前 speed 动态更新二阶 Butterworth 低通滤波器
+       * cutoff 会随 speed 反向收紧，用于抗混叠
+       */
+      private updateLowPassFilter(speed: number) {
+        // ===== 语音安全参数 =====
+        const baseCutoff = 8000; // 8kHz：语音上限
+        const cutoff = Math.min(baseCutoff / speed, 9000); // 动态收紧
+        const fs = this.sampleRate;
+
+        // 预扭曲（双线性变换）
+        const omega = Math.tan((Math.PI * cutoff) / fs);
+        const omega2 = omega * omega;
+        const sqrt2 = Math.SQRT2;
+
+        const norm = 1 / (1 + sqrt2 * omega + omega2);
+
+        // Butterworth 二阶低通系数
+        this.lpf_b0 = omega2 * norm;
+        this.lpf_b1 = 2 * this.lpf_b0;
+        this.lpf_b2 = this.lpf_b0;
+
+        this.lpf_a1 = 2 * (omega2 - 1) * norm;
+        this.lpf_a2 = (1 - sqrt2 * omega + omega2) * norm;
       }
 
       /**
-       * 变速重采样算法
-       * 技术：相位累加 (Phase Accumulation) + 线性插值 (Linear Interpolation) + 一阶低通滤波 (LPF)
+       * 变速重采样（语音优化版）
+       * 技术：
+       * - 相位累加（Phase Accumulation）
+       * - 四点 Hermite 插值（Catmull-Rom）
+       * - 二阶 Butterworth 低通（cutoff 随 speed 变化）
        */
-      private resampleAndPlay(outputChannels: Float32Array[]): void {
-        const outputLength = outputChannels[0].length;
+      private resampleAndOutput(outputChannels: Float32Array[]) {
+        const outputLength = this.processFrameSize;
 
-        // 根据倍速计算需要从 buffer 中读取多少个原始样本
-        // 例如：要输出 128 个点，2倍速播放，则需要读取 256 个原始点
-        let readLen = Math.round(outputLength * this.currentPlaybackRate);
+        // 需要读取的原始样本数
+        let samplesToRead = this.currentReadSamplesPerFrame;
+        const speed = samplesToRead / outputLength;
 
-        // 计算步进 (Step Size)
-        const speed = readLen / outputLength;
+        if (this.outputBufferQueueSampleCount < samplesToRead) return;
 
-        // 如果数据不够，放弃本次变速处理 (通常会自动回退到补零逻辑，这里简化直接返回)
-        if (this.outputBufferSampleCount < readLen) return;
+        // ==========================================
+        // 1. 收集源数据
+        // ==========================================
+        const sourceBlocks: Float32Array[] = [];
 
-        // 1. 收集所需的源数据 (Source Blocks)
-        const sourceChunks: Float32Array[] = [];
-
-        while (readLen > 0 && this.outputBuffer[0]) {
-          const buffer = this.outputBuffer[0];
-
-          if (readLen >= buffer.length) {
-            // 需要整个块
-            sourceChunks.push(buffer);
-            readLen -= buffer.length;
-            this.outputBufferSampleCount -= buffer.length;
-            this.outputBuffer.shift();
+        while (samplesToRead > 0 && this.outputBufferQueue[0]) {
+          const buf = this.outputBufferQueue[0];
+          if (samplesToRead >= buf.length) {
+            sourceBlocks.push(buf);
+            samplesToRead -= buf.length;
+            this.outputBufferQueueSampleCount -= buf.length;
+            this.outputBufferQueue.shift();
           } else {
-            // 只需要块的一部分
-            sourceChunks.push(buffer.subarray(0, readLen));
-            this.outputBuffer[0] = buffer.subarray(readLen); // 修改队列头部
-            this.outputBufferSampleCount -= readLen;
-            readLen = 0;
+            sourceBlocks.push(buf.subarray(0, samplesToRead));
+            this.outputBufferQueue[0] = buf.subarray(samplesToRead);
+            this.outputBufferQueueSampleCount -= samplesToRead;
             break;
           }
         }
 
-        // 2. 准备虚拟游标 (Virtual Cursor) 用于在 sourceChunks 数组组中漫游
-        let currentChunkIndex = 0;
-        let currentOffsetInChunk = 0;
+        // ==========================================
+        // 2. 虚拟游标（连续逻辑数组）
+        // ==========================================
+        let blockIndex = 0;
+        let offsetInBlock = 0;
 
-        /** 游标向前移动 */
         const advanceCursor = (step: number) => {
-          currentOffsetInChunk += step;
-          // 跨越块边界处理
-          while (
-            currentChunkIndex < sourceChunks.length &&
-            currentOffsetInChunk >= sourceChunks[currentChunkIndex].length
-          ) {
-            currentOffsetInChunk -= sourceChunks[currentChunkIndex].length;
-            currentChunkIndex++;
+          offsetInBlock += step;
+          while (blockIndex < sourceBlocks.length && offsetInBlock >= sourceBlocks[blockIndex].length) {
+            offsetInBlock -= sourceBlocks[blockIndex].length;
+            blockIndex++;
           }
         };
 
-        /** 读取指定偏移量的样本值 (Peek) */
-        const peekSample = (offset: number): number => {
-          let idx = currentChunkIndex;
-          let off = currentOffsetInChunk + offset;
+        const sampleAt = (rel: number): number => {
+          let idx = blockIndex;
+          let off = offsetInBlock + rel;
 
-          // 向前查找
-          while (idx < sourceChunks.length && off >= sourceChunks[idx].length) {
-            off -= sourceChunks[idx].length;
+          while (idx < sourceBlocks.length && off >= sourceBlocks[idx].length) {
+            off -= sourceBlocks[idx].length;
             idx++;
           }
 
-          if (idx >= sourceChunks.length) return 0;
-          return sourceChunks[idx][off] ?? 0;
+          return sourceBlocks[idx]?.[off] ?? 0;
         };
 
-        // 3. 执行重采样循环
-        // 状态变量保持在闭包/类成员中可能更好，这里沿用原逻辑作为局部变量演示
-        // 注意：为了完美音质，phase 和 lastFilteredValue 应该提升为类成员变量
-        let filterState = 0; // 上一次滤波后的值
-        let phase = 0; // 相位累加器
-        let lastIntegerPhase = 0;
+        // ==========================================
+        // 3. 更新二阶低通（cutoff 随 speed）
+        // ==========================================
+        this.updateLowPassFilter(speed);
+
+        // ==========================================
+        // 4. 重采样主循环
+        // ==========================================
+        let phase = 0;
+        let lastIntPhase = 0;
 
         for (let i = 0; i < outputLength; i++) {
-          const integerPhase = phase | 0; // 取整
-          const fractionPhase = phase - integerPhase; // 小数部分 (用于插值权重)
+          const intPhase = phase | 0;
+          const t = phase - intPhase;
 
-          // 移动游标
-          const delta = integerPhase - lastIntegerPhase;
+          // 推进游标（只前进）
+          const delta = intPhase - lastIntPhase;
           if (delta > 0) {
             advanceCursor(delta);
-            lastIntegerPhase = integerPhase;
+            lastIntPhase = intPhase;
           }
 
-          // 获取相邻两个样本点
-          const sampleCurrent = peekSample(0);
-          const sampleNext = peekSample(1);
+          /**
+           * 取 4 个点：
+           * x[-1], x[0], x[1], x[2]
+           */
+          const xm1 = sampleAt(-1);
+          const x0 = sampleAt(0);
+          const x1 = sampleAt(1);
+          const x2 = sampleAt(2);
 
-          // 线性插值 (Linear Interpolation)
-          const interpolatedValue = sampleCurrent + (sampleNext - sampleCurrent) * fractionPhase;
+          // ======================================
+          // Hermite (Catmull-Rom) 插值
+          // ======================================
+          const c0 = x0;
+          const c1 = 0.5 * (x1 - xm1);
+          const c2 = xm1 - 2.5 * x0 + 2 * x1 - 0.5 * x2;
+          const c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
 
-          // 低通滤波 (IIR Filter) - 平滑处理，消除高频锯齿
-          // y[n] = y[n-1] + alpha * (x[n] - y[n-1])
-          const filteredValue = filterState + this.lowPassAlpha * (interpolatedValue - filterState);
-          filterState = filteredValue;
+          const interpolated = ((c3 * t + c2) * t + c1) * t + c0;
+
+          // ======================================
+          // 二阶 Butterworth 低通
+          // ======================================
+          const y =
+            this.lpf_b0 * interpolated +
+            this.lpf_b1 * this.lpfInput1 +
+            this.lpf_b2 * this.lpfInput2 -
+            this.lpf_a1 * this.lpfOutput1 -
+            this.lpf_a2 * this.lpfOutput2;
+
+          // 更新滤波状态
+          this.lpfInput2 = this.lpfInput1;
+          this.lpfInput1 = interpolated;
+          this.lpfOutput2 = this.lpfOutput1;
+          this.lpfOutput1 = y;
 
           // 写入输出
-          for (const channel of outputChannels) channel[i] = filteredValue;
+          for (const ch of outputChannels) ch[i] = y;
 
           // 推进相位
           phase += speed;
