@@ -6,6 +6,8 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
     registerProcessorName,
     //@ts-ignore
     class extends AudioWorkletProcessor {
+      //@ts-ignore
+      private readonly sampleRate = sampleRate || 48000;
       /** 采集缓存大小（对应一次 postMessage 的数据量） */
       private inputBuffer = new Float32Array(blockSize);
       private inputBufferIndex = 0;
@@ -19,13 +21,10 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       private outputPlaySpeed = 1;
       private outputPlayedSampleCount = 0;
 
-      private readonly playSpeedx1SampleCount = 4800;
-      private readonly playSpeedx2SampleCount = 48000 * 5;
+      private readonly playSpeedx1SampleCount = this.sampleRate * 0.3;
+      private readonly playSpeedx2SampleCount = this.sampleRate * 5;
 
-      /** ===== 倍速播放跨 process 状态 ===== */
-      private speedPhase = 0; // 相位（浮点）
-      private speedPrevSample = 0; // 上一个 buffer 的最后一个样本
-      private speedHasPrev = false;
+      private readonly outputAlpha: number;
 
       constructor() {
         super();
@@ -36,18 +35,23 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           this.outputBuffer.push(buffer);
           this.outputBufferSampleCount += buffer.length;
         };
+        const cutoffFreq = 16000; // 语音非常合适
+        // RC 低通公式
+        const dt = 1 / this.sampleRate;
+        const RC = 1 / (2 * Math.PI * cutoffFreq);
+        this.outputAlpha = dt / (RC + dt);
       }
 
       private getPlaySpeed() {
-        if (this.outputPlayedSampleCount < this.playSpeedx1SampleCount) {
+        if (this.outputBufferSampleCount < this.playSpeedx1SampleCount) {
           return 1;
         }
-        if (this.outputPlayedSampleCount > this.playSpeedx2SampleCount) {
+        if (this.outputBufferSampleCount > this.playSpeedx2SampleCount) {
           return 2;
         }
         return (
           1 +
-          (this.outputPlayedSampleCount - this.playSpeedx1SampleCount) /
+          (this.outputBufferSampleCount - this.playSpeedx1SampleCount) /
             (this.playSpeedx2SampleCount - this.playSpeedx1SampleCount)
         );
       }
@@ -86,8 +90,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           this.port.postMessage(
             {
               buffer: bufferToSend,
-              // @ts-ignore
-              sampleRate,
+              sampleRate: this.sampleRate,
               outputSampleCount: this.outputBufferSampleCount,
               outputPlaySpeed: this.outputPlaySpeed,
             },
@@ -105,7 +108,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         /** 输出缓存大小（对应一次 postMessage 的数据量） */
         const outputSampleCount = output[0].length;
 
-        // this.outputPlaySpeed = this.getPlaySpeed();
+        this.outputPlaySpeed = this.getPlaySpeed();
         this.outputPlayedSampleCount += outputSampleCount;
 
         /** 1 倍速：直拷贝 */
@@ -142,8 +145,135 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         }
 
         /** 1~2 倍速 */
-        // this.playOtherSpeed(output);
+        this.resampleSpeech(output);
         return true;
+      }
+
+      /**
+       * 语音加速重采样（1 ~ 2 倍）
+       * 使用：相位累加 + 线性插值 + 一阶低通滤波
+       *
+       * ⚠️ 针对 AudioWorklet / 实时语音优化
+       */
+      private resampleSpeech(output: Float32Array[]): void {
+        const outputLen = output[0].length;
+
+        // 根据播放速度，计算需要读取的输入样本数
+        let readLen = Math.round(outputLen * this.outputPlaySpeed);
+        const speed = readLen / outputLen;
+
+        if (this.outputBufferSampleCount < readLen) return;
+
+        /**
+         * ===============================
+         * 拼接待读取的 buffer（保持原结构）
+         * ===============================
+         */
+        const readBuffers: Float32Array[] = [];
+
+        while (readLen > 0 && this.outputBuffer[0]) {
+          const buffer = this.outputBuffer[0];
+
+          if (readLen >= buffer.length) {
+            readBuffers.push(buffer);
+            readLen -= buffer.length;
+            this.outputBufferSampleCount -= buffer.length;
+            this.outputBuffer.shift();
+            continue;
+          }
+
+          readBuffers.push(buffer.subarray(0, readLen));
+          this.outputBuffer[0] = buffer.subarray(readLen);
+          this.outputBufferSampleCount -= readLen;
+          readLen = 0;
+          break;
+        }
+
+        /**
+         * ===============================
+         * 游标状态（关键优化点）
+         * ===============================
+         *
+         * 把 readBuffers 视作一条“逻辑连续数组”
+         * 用游标代替 getCurrentSample 的 for 遍历
+         */
+        let curBufIndex = 0; // 当前位于第几个 buffer
+        let curBufOffset = 0; // 当前 buffer 内偏移
+
+        const advance = (step: number) => {
+          curBufOffset += step;
+
+          // 如果当前 buffer 用完，推进到下一个
+          while (curBufIndex < readBuffers.length && curBufOffset >= readBuffers[curBufIndex].length) {
+            curBufOffset -= readBuffers[curBufIndex].length;
+            curBufIndex++;
+          }
+        };
+
+        const peek = (offset: number): number => {
+          let bufIndex = curBufIndex;
+          let bufOffset = curBufOffset + offset;
+
+          // 只向前推进，不回溯
+          while (bufIndex < readBuffers.length && bufOffset >= readBuffers[bufIndex].length) {
+            bufOffset -= readBuffers[bufIndex].length;
+            bufIndex++;
+          }
+
+          if (bufIndex >= readBuffers.length) return 0;
+          return readBuffers[bufIndex][bufOffset] ?? 0;
+        };
+
+        /**
+         * ===============================
+         * 低通滤波状态
+         * ===============================
+         */
+        let lpLast = 0;
+
+        /**
+         * ===============================
+         * 相位累加 + 线性插值
+         * ===============================
+         */
+        let phase = 0;
+        let lastIntPhase = 0;
+
+        for (let i = 0; i < outputLen; i++) {
+          const intPhase = phase | 0;
+          const frac = phase - intPhase;
+
+          // 根据相位差推进游标（只会前进）
+          const delta = intPhase - lastIntPhase;
+          if (delta > 0) {
+            advance(delta);
+            lastIntPhase = intPhase;
+          }
+
+          // 当前点 & 下一个点（用于线性插值）
+          const s0 = peek(0);
+          const s1 = peek(1);
+
+          // 线性插值
+          const interpolated = s0 + (s1 - s0) * frac;
+
+          /**
+           * ===============================
+           * 低通滤波（IIR 一阶）
+           * y[n] = y[n-1] + α * (x[n] - y[n-1])
+           * ===============================
+           */
+          const filtered = lpLast + this.outputAlpha * (interpolated - lpLast);
+          lpLast = filtered;
+
+          // 写入所有输出声道（通常是单声道）
+          for (const out of output) {
+            out[i] = filtered;
+          }
+
+          // 相位推进
+          phase += speed;
+        }
       }
     }
   );
