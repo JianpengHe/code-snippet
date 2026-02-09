@@ -30,6 +30,10 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       private outputBufferQueue: Float32Array[] = [];
       /** 播放队列中剩余的总样本数 */
       private outputBufferQueueSampleCount = 0;
+      /** 当前读取到第几个 buffer */
+      private outputQueueReadBufferIndex = 0;
+      /** 当前 buffer 内 sample 偏移 */
+      private outputQueueReadSampleIndex = 0;
 
       /** 当前播放速率对应的“读取样本数”（以 128 为 1x） */
       private currentReadSamplesPerFrame = this.processFrameSize;
@@ -223,47 +227,13 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         this.totalOutputSamples += frameOutputSamples;
 
         // ===== 策略 A：1x 直接拷贝 =====
-        if (this.currentReadSamplesPerFrame === this.processFrameSize) {
-          let written = 0;
-          let buffer: Float32Array | undefined;
-          // 循环从队列头部取数据填充输出
-          while (this.outputBufferQueueSampleCount > 0 && (buffer = this.outputBufferQueue[0])) {
-            /** 计算当前块能写入多少数据（剩余空间 vs 当前块长度） */
-            const remaining = frameOutputSamples - written;
 
-            if (remaining < buffer.length) {
-              // 当前块数据比剩余空间多 -> 切割，填满输出，剩下的放回去
-              this.outputBufferQueue[0] = buffer.subarray(remaining); // 保留剩余部分
-              buffer = buffer.subarray(0, remaining);
-            } else {
-              this.outputBufferQueue.shift(); // 移除已处理的块
-            }
-            // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
-            for (const ch of outputChannels) ch.set(buffer, written);
-
-            written += buffer.length;
-            this.outputBufferQueueSampleCount -= buffer.length;
-            // 如果填满了，就跳出
-            if (written >= frameOutputSamples) return true;
-          }
-
-          /**  如果数据不够填满一帧（例如网络卡顿），剩余部分补 0（静音） */
-          if (written < frameOutputSamples) {
-            // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
-            for (const ch of outputChannels) ch.fill(0, written);
-
-            this.stableRunningSamples = 0;
-            // this.samplesSinceLastPredict = this.PREDICT_INTERVAL_SAMPLES; // 立即触发下一次预测
-            this.targetBufferSamples = Math.min(this.targetBufferSamples + this.sampleRate * 0.005, this.sampleRate);
-            this.samplesSinceLastPrediction = 0;
-          }
+        if (this.currentReadSamplesPerFrame === this.processFrameSize)
           // 返回 true 保持处理器存活
-          return true;
-        }
+          return this.outputNormalSpeed(outputChannels, frameOutputSamples);
 
         /** 策略 B：变速播放 (1.x ~ 2.0 倍速，需重采样) */
-        this.resampleAndOutput(outputChannels);
-        return true;
+        return this.resampleAndOutput(outputChannels, frameOutputSamples);
       }
       /**
        * 根据当前 speed 动态更新二阶 Butterworth 低通滤波器
@@ -298,14 +268,12 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
        * - 四点 Hermite 插值（Catmull-Rom）
        * - 二阶 Butterworth 低通（cutoff 随 speed 变化）
        */
-      private resampleAndOutput(outputChannels: Float32Array[]) {
-        const outputLength = this.processFrameSize;
-
+      private resampleAndOutput(outputChannels: Float32Array[], frameOutputSamples: number): true {
         // 需要读取的原始样本数
         let samplesToRead = this.currentReadSamplesPerFrame;
-        const speed = samplesToRead / outputLength;
+        const speed = samplesToRead / frameOutputSamples;
 
-        if (this.outputBufferQueueSampleCount < samplesToRead) return;
+        if (this.outputBufferQueueSampleCount < samplesToRead) return true;
 
         // ==========================================
         // 1. 收集源数据
@@ -364,7 +332,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         let phase = 0;
         let lastIntPhase = 0;
 
-        for (let i = 0; i < outputLength; i++) {
+        for (let i = 0; i < frameOutputSamples; i++) {
           const intPhase = phase | 0;
           const t = phase - intPhase;
 
@@ -416,6 +384,46 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           // 推进相位
           phase += speed;
         }
+        return true;
+      }
+      // ==========================================
+      // 1x 速播放
+      // ==========================================
+      private outputNormalSpeed(outputChannels: Float32Array[], frameOutputSamples: number): true {
+        let written = 0;
+        let buffer: Float32Array | undefined;
+        // 循环从队列头部取数据填充输出
+        while (this.outputBufferQueueSampleCount > 0 && (buffer = this.outputBufferQueue[0])) {
+          /** 计算当前块能写入多少数据（剩余空间 vs 当前块长度） */
+          const remaining = frameOutputSamples - written;
+
+          if (remaining < buffer.length) {
+            // 当前块数据比剩余空间多 -> 切割，填满输出，剩下的放回去
+            this.outputBufferQueue[0] = buffer.subarray(remaining); // 保留剩余部分
+            buffer = buffer.subarray(0, remaining);
+          } else {
+            this.outputBufferQueue.shift(); // 移除已处理的块
+          }
+          // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
+          for (const ch of outputChannels) ch.set(buffer, written);
+
+          written += buffer.length;
+          this.outputBufferQueueSampleCount -= buffer.length;
+          // 如果填满了，就跳出
+          if (written >= frameOutputSamples) return true;
+        }
+
+        /**  如果数据不够填满一帧（例如网络卡顿），剩余部分补 0（静音） */
+        if (written < frameOutputSamples) {
+          // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
+          for (const ch of outputChannels) ch.fill(0, written);
+
+          this.stableRunningSamples = 0;
+          // this.samplesSinceLastPredict = this.PREDICT_INTERVAL_SAMPLES; // 立即触发下一次预测
+          this.targetBufferSamples = Math.min(this.targetBufferSamples + this.sampleRate * 0.005, this.sampleRate);
+          this.samplesSinceLastPrediction = 0;
+        }
+        return true;
       }
     }
   );
