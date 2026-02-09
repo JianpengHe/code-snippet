@@ -27,7 +27,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       // 播放部分 (Main Thread -> Speaker)
       // ==========================================
       /** 播放队列（抖动缓冲）：存放来自主线程的音频块 */
-      private outputBufferQueue: Float32Array[] = [];
+      private readonly outputBufferQueue: Float32Array[] = [];
       /** 播放队列中剩余的总样本数 */
       private outputBufferQueueSampleCount = 0;
       /** 当前读取到第几个 buffer */
@@ -260,7 +260,29 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         this.lpf_a1 = 2 * (omega2 - 1) * norm;
         this.lpf_a2 = (1 - sqrt2 * omega + omega2) * norm;
       }
-
+      /**
+       * 从输出缓存队列中采样指定位置的样本值
+       * @param localBufIndex 输出缓存队列索引
+       * @param localSampleOff 输出缓存队列样本偏移量
+       * @returns 样本值
+       */
+      private sampleAt(localBufIndex: number, localSampleOff: number): number {
+        // let off = localSampleIndex + rel;
+        while (localBufIndex < this.outputBufferQueue.length) {
+          const buf = this.outputBufferQueue[localBufIndex];
+          if (localSampleOff < 0) {
+            localBufIndex--;
+            if (localBufIndex < 0) return 0;
+            localSampleOff += this.outputBufferQueue[localBufIndex].length;
+          } else if (localSampleOff >= buf.length) {
+            localSampleOff -= buf.length;
+            localBufIndex++;
+          } else {
+            return buf[localSampleOff];
+          }
+        }
+        return 0;
+      }
       /**
        * 变速重采样（语音优化版）
        * 技术：
@@ -269,57 +291,12 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
        * - 二阶 Butterworth 低通（cutoff 随 speed 变化）
        */
       private resampleAndOutput(outputChannels: Float32Array[], frameOutputSamples: number): true {
-        // 需要读取的原始样本数
-        let samplesToRead = this.currentReadSamplesPerFrame;
-        const speed = samplesToRead / frameOutputSamples;
+        const speed = this.currentReadSamplesPerFrame / frameOutputSamples;
 
-        if (this.outputBufferQueueSampleCount < samplesToRead) return true;
+        if (this.outputBufferQueueSampleCount < this.currentReadSamplesPerFrame) return true;
 
-        // ==========================================
-        // 1. 收集源数据
-        // ==========================================
-        const sourceBlocks: Float32Array[] = [];
-
-        while (samplesToRead > 0 && this.outputBufferQueue[0]) {
-          const buf = this.outputBufferQueue[0];
-          if (samplesToRead >= buf.length) {
-            sourceBlocks.push(buf);
-            samplesToRead -= buf.length;
-            this.outputBufferQueueSampleCount -= buf.length;
-            this.outputBufferQueue.shift();
-          } else {
-            sourceBlocks.push(buf.subarray(0, samplesToRead));
-            this.outputBufferQueue[0] = buf.subarray(samplesToRead);
-            this.outputBufferQueueSampleCount -= samplesToRead;
-            break;
-          }
-        }
-
-        // ==========================================
-        // 2. 虚拟游标（连续逻辑数组）
-        // ==========================================
-        let blockIndex = 0;
-        let offsetInBlock = 0;
-
-        const advanceCursor = (step: number) => {
-          offsetInBlock += step;
-          while (blockIndex < sourceBlocks.length && offsetInBlock >= sourceBlocks[blockIndex].length) {
-            offsetInBlock -= sourceBlocks[blockIndex].length;
-            blockIndex++;
-          }
-        };
-
-        const sampleAt = (rel: number): number => {
-          let idx = blockIndex;
-          let off = offsetInBlock + rel;
-
-          while (idx < sourceBlocks.length && off >= sourceBlocks[idx].length) {
-            off -= sourceBlocks[idx].length;
-            idx++;
-          }
-
-          return sourceBlocks[idx]?.[off] ?? 0;
-        };
+        let localBufIndex = this.outputQueueReadBufferIndex;
+        let localSampleIndex = this.outputQueueReadSampleIndex;
 
         // ==========================================
         // 3. 更新二阶低通（cutoff 随 speed）
@@ -330,27 +307,33 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         // 4. 重采样主循环
         // ==========================================
         let phase = 0;
-        let lastIntPhase = 0;
+        let lastInt = 0;
 
         for (let i = 0; i < frameOutputSamples; i++) {
-          const intPhase = phase | 0;
-          const t = phase - intPhase;
+          const intP = phase | 0;
+          const t = phase - intP;
 
-          // 推进游标（只前进）
-          const delta = intPhase - lastIntPhase;
+          const delta = intP - lastInt;
           if (delta > 0) {
-            advanceCursor(delta);
-            lastIntPhase = intPhase;
+            localSampleIndex += delta;
+            while (
+              localBufIndex < this.outputBufferQueue.length &&
+              localSampleIndex >= this.outputBufferQueue[localBufIndex].length
+            ) {
+              localSampleIndex -= this.outputBufferQueue[localBufIndex].length;
+              localBufIndex++;
+            }
+            lastInt = intP;
           }
 
           /**
            * 取 4 个点：
            * x[-1], x[0], x[1], x[2]
            */
-          const xm1 = sampleAt(-1);
-          const x0 = sampleAt(0);
-          const x1 = sampleAt(1);
-          const x2 = sampleAt(2);
+          const xm1 = this.sampleAt(localBufIndex, localSampleIndex - 1);
+          const x0 = this.sampleAt(localBufIndex, localSampleIndex);
+          const x1 = this.sampleAt(localBufIndex, localSampleIndex + 1);
+          const x2 = this.sampleAt(localBufIndex, localSampleIndex + 2);
 
           // ======================================
           // Hermite (Catmull-Rom) 插值
@@ -360,21 +343,20 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           const c2 = xm1 - 2.5 * x0 + 2 * x1 - 0.5 * x2;
           const c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
 
-          const interpolated = ((c3 * t + c2) * t + c1) * t + c0;
+          const interp = ((c3 * t + c2) * t + c1) * t + c0;
 
           // ======================================
           // 二阶 Butterworth 低通
           // ======================================
           const y =
-            this.lpf_b0 * interpolated +
+            this.lpf_b0 * interp +
             this.lpf_b1 * this.lpfInput1 +
             this.lpf_b2 * this.lpfInput2 -
             this.lpf_a1 * this.lpfOutput1 -
             this.lpf_a2 * this.lpfOutput2;
 
-          // 更新滤波状态
           this.lpfInput2 = this.lpfInput1;
-          this.lpfInput1 = interpolated;
+          this.lpfInput1 = interp;
           this.lpfOutput2 = this.lpfOutput1;
           this.lpfOutput1 = y;
 
@@ -384,6 +366,13 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           // 推进相位
           phase += speed;
         }
+
+        const consumed = this.currentReadSamplesPerFrame;
+        this.outputQueueReadSampleIndex = localSampleIndex;
+        this.outputQueueReadBufferIndex = localBufIndex;
+        this.outputBufferQueueSampleCount -= consumed;
+
+        this.compactOutputQueue();
         return true;
       }
       // ==========================================
@@ -391,28 +380,30 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       // ==========================================
       private outputNormalSpeed(outputChannels: Float32Array[], frameOutputSamples: number): true {
         let written = 0;
-        let buffer: Float32Array | undefined;
-        // 循环从队列头部取数据填充输出
-        while (this.outputBufferQueueSampleCount > 0 && (buffer = this.outputBufferQueue[0])) {
+        /** 每次循环只处理outputBufferQueue的一个元素 */
+        while (written < frameOutputSamples && this.outputBufferQueueSampleCount > 0) {
+          const buf = this.outputBufferQueue[this.outputQueueReadBufferIndex];
+          if (!buf) break;
           /** 计算当前块能写入多少数据（剩余空间 vs 当前块长度） */
-          const remaining = frameOutputSamples - written;
-
-          if (remaining < buffer.length) {
-            // 当前块数据比剩余空间多 -> 切割，填满输出，剩下的放回去
-            this.outputBufferQueue[0] = buffer.subarray(remaining); // 保留剩余部分
-            buffer = buffer.subarray(0, remaining);
-          } else {
-            this.outputBufferQueue.shift(); // 移除已处理的块
-          }
+          const remainInBuf = buf.length - this.outputQueueReadSampleIndex;
+          /** 计算当前块需要写入多少数据（剩余数据 vs 所需数据） */
+          const need = frameOutputSamples - written;
+          /** 计算实际写入数据量（取剩余空间和所需数据的较小值） */
+          const copyCount = Math.min(remainInBuf, need);
+          /** 从当前块提取数据（从游标位置开始，长度为 copyCount） */
+          const subBuffer = buf.subarray(this.outputQueueReadSampleIndex, this.outputQueueReadSampleIndex + copyCount);
           // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
-          for (const ch of outputChannels) ch.set(buffer, written);
+          for (const ch of outputChannels) ch.set(subBuffer, written);
 
-          written += buffer.length;
-          this.outputBufferQueueSampleCount -= buffer.length;
-          // 如果填满了，就跳出
-          if (written >= frameOutputSamples) return true;
+          this.outputQueueReadSampleIndex += copyCount;
+          this.outputBufferQueueSampleCount -= copyCount;
+          written += copyCount;
+
+          if (this.outputQueueReadSampleIndex >= buf.length) {
+            this.outputQueueReadBufferIndex++;
+            this.outputQueueReadSampleIndex = 0;
+          }
         }
-
         /**  如果数据不够填满一帧（例如网络卡顿），剩余部分补 0（静音） */
         if (written < frameOutputSamples) {
           // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
@@ -423,7 +414,18 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           this.targetBufferSamples = Math.min(this.targetBufferSamples + this.sampleRate * 0.005, this.sampleRate);
           this.samplesSinceLastPrediction = 0;
         }
+
+        this.compactOutputQueue();
         return true;
+      }
+      // ==========================================
+      // 队列压缩（超过 66 个元素时，删除64个旧数据）
+      // ==========================================
+      private compactOutputQueue() {
+        if (this.outputQueueReadBufferIndex > 66) {
+          this.outputBufferQueue.splice(0, 64);
+          this.outputQueueReadBufferIndex -= 64;
+        }
       }
     }
   );
@@ -494,7 +496,7 @@ export class AudioInputOutputProcessor {
     this.audioNode?.port.postMessage({ frameIndex, buffer });
   }
 }
-
+console.log("666");
 // 测试用例
 // const blockSize = 512;
 // navigator.mediaDevices
