@@ -1,8 +1,26 @@
 /// <reference types="@types/audioworklet" />
 const registerProcessorName = "audioInputOutput";
+export type IAudioInputOutputProcessorMessage = {
+  /** 当前输入缓冲区 */
+  buffer: Float32Array;
+  /** 当前采样率 */
+  sampleRate: number;
+  /** 当前输出缓冲区样本数 */
+  outputSampleCount: number;
+  /** 当前输出播放速度 */
+  outputPlaySpeed: number;
+  /** 当前稳定播放的样本数 */
+  stableSamples: number;
+  /** 当前缓存的样本数 */
+  playSpeedx1SampleCount: number;
+};
 
-const registerProcessorFn = String((registerProcessorName: string, blockSize: number) => {
-  class ProcessorBuffer {
+const registerProcessorFn = String((registerProcessorName, blockSize) => {
+  /**
+   * 基础缓冲区管理类
+   * 负责：录音数据的累积、播放队列的管理、样本级别的精确查找
+   */
+  class AudioBufferManager {
     // ==========================================
     // 录音部分 (Mic -> Main Thread)
     // ==========================================
@@ -11,7 +29,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
     /** 当前录音缓冲区写入位置 */
     private recordWriteIndex = 0;
     /** 单次 process 回调内的样本数（通常为 128） */
-    public processFrameSize = 128;
+    public processFrameSize = 128; // AudioWorklet 固定的处理单元大小
 
     // ==========================================
     // 播放部分 (Main Thread -> Speaker)
@@ -25,7 +43,8 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
     /** 当前 buffer 内 sample 偏移 */
     protected outputQueueReadSampleIndex = 0;
 
-    public onInputData(inputs: Float32Array[][]) {
+    /** 处理输入音频数据（录音） */
+    public onInputData(inputs: Float32Array[][]): Float32Array | null {
       // ==========================================
       // 1. 录音处理（Input -> recordBuffer）
       // ==========================================
@@ -43,43 +62,43 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       // 更新当前process音频数据索引
       this.recordWriteIndex += this.processFrameSize;
 
-      // 录音缓冲满，发送给主线程
+      // 当录音缓冲区填满目标大小时（如 512 采样），抛出给主线程
       if (this.recordWriteIndex >= this.recordBuffer.length) {
-        // 1. 获取要发送的数据块
-        const bufferToSend = this.recordBuffer;
-
-        // 3. 此时 bufferToSend.buffer 已经在当前线程不可用了（变成 0 字节）
+        // 使用 slice 确保发送的是副本，避免当前线程后续写入污染数据
+        const dataToSend = this.recordBuffer;
+        //  此时 bufferToSend.buffer 已经在当前线程不可用了（变成 0 字节）
         // 我们需要重新分配一个新的容器
-        // this.recordBuffer = new Float32Array(blockSize);
+        this.recordBuffer = new Float32Array(blockSize);
         this.recordWriteIndex = 0;
-
-        return bufferToSend;
+        return dataToSend;
       }
       return null;
     }
+
+    /** 接收来自主线程的待播放音频块 */
     public onOutputData(audioChunk: Float32Array) {
       this.outputBufferQueue.push(audioChunk);
       this.outputBufferQueueSampleCount += audioChunk.length;
     }
-    /**
-     * 从输出缓存队列中采样指定位置的样本值
-     * @param localBufIndex 输出缓存队列索引
-     * @param localSampleOff 输出缓存队列样本偏移量
-     * @returns 样本值
+
+    /** * 精准采样函数：支持跨 Buffer 边界和插值所需的相对位移查找
+     * @param outputQueueReadBufferIndex 当前 Buffer 索引
+     * @param outputQueueReadSampleIndex 当前采样点相对于该 Buffer 起始位置的偏移（允许为负或溢出）
      */
-    protected sampleAt(localBufIndex: number, localSampleOff: number): number {
-      // let off = localSampleIndex + rel;
-      while (localBufIndex < this.outputBufferQueue.length) {
-        const buf = this.outputBufferQueue[localBufIndex];
-        if (localSampleOff < 0) {
-          localBufIndex--;
-          if (localBufIndex < 0) return 0;
-          localSampleOff += this.outputBufferQueue[localBufIndex].length;
-        } else if (localSampleOff >= buf.length) {
-          localSampleOff -= buf.length;
-          localBufIndex++;
+    protected getSampleWithOffset(outputQueueReadBufferIndex: number, outputQueueReadSampleIndex: number): number {
+      while (outputQueueReadBufferIndex < this.outputBufferQueue.length) {
+        const buffer = this.outputBufferQueue[outputQueueReadBufferIndex];
+        if (outputQueueReadSampleIndex < 0) {
+          // 向前跨 Buffer
+          outputQueueReadBufferIndex--;
+          if (outputQueueReadBufferIndex < 0) return 0; // 越界保护（静音）
+          outputQueueReadSampleIndex += this.outputBufferQueue[outputQueueReadBufferIndex].length;
+        } else if (outputQueueReadSampleIndex >= buffer.length) {
+          // 向后跨 Buffer
+          outputQueueReadSampleIndex -= buffer.length;
+          outputQueueReadBufferIndex++;
         } else {
-          return buf[localSampleOff];
+          return buffer[outputQueueReadSampleIndex];
         }
       }
       return 0;
@@ -103,58 +122,58 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
     //   this.outputQueueReadBufferIndex = outputQueueReadBufferIndex;
     // }
 
-    // ==========================================
-    // 队列压缩（超过 66 个元素时，删除64个旧数据）
-    // ==========================================
-    public compactOutputQueue() {
-      if (this.outputQueueReadBufferIndex > 66) {
+    /** 队列压缩：防止已播放的 Buffer 长期占用内存 */
+    public compactQueue() {
+      // 阈值设为 64 是为了平衡 GC 频率和内存占用
+      if (this.outputQueueReadBufferIndex > 64) {
         this.outputBufferQueue.splice(0, 64);
         this.outputQueueReadBufferIndex -= 64;
       }
     }
   }
-  class RateOutput extends ProcessorBuffer {
+
+  /**
+   * 重采样执行类
+   * 负责：变速播放、Hermite 插值、抗混叠低通滤波
+   */
+  class ResamplerEngine extends AudioBufferManager {
     // ==========================================
     // 二阶低通滤波器状态（Direct Form I）
     // ==========================================
-    private lpfInput1 = 0;
-    private lpfInput2 = 0;
-    private lpfOutput1 = 0;
-    private lpfOutput2 = 0;
+    // 低通滤波器状态（防止变速产生的金属混叠音）
+    private lpfX1 = 0;
+    private lpfX2 = 0; // 输入历史
+    private lpfY1 = 0;
+    private lpfY2 = 0; // 输出历史
 
     /** 当前低通滤波器系数（随 speed 动态更新） */
-    private lpf_b0 = 0;
-    private lpf_b1 = 0;
-    private lpf_b2 = 0;
-    private lpf_a1 = 0;
-    private lpf_a2 = 0;
-    /**
-     * 根据当前 speed 动态更新二阶 Butterworth 低通滤波器
-     * cutoff 会随 speed 反向收紧，用于抗混叠
-     */
-    private updateLowPassFilter(speed: number) {
+    private b0 = 0;
+    private b1 = 0;
+    private b2 = 0;
+    private a1 = 0;
+    private a2 = 0;
+
+    /** 动态计算二阶低通系数：当 speed > 1 时，截止频率必须收缩，cutoff 会随 speed 反向收紧，用于抗混叠 */
+    private updateAntialiasingFilter(speed: number) {
       // ===== 语音安全参数 =====
       const baseCutoff = 8000; // 8kHz：语音上限
       const cutoff = Math.min(baseCutoff / speed, 9000); // 动态收紧
-      const fs = sampleRate;
-
-      // 预扭曲（双线性变换）
-      const omega = Math.tan((Math.PI * cutoff) / fs);
+      const omega = Math.tan((Math.PI * cutoff) / sampleRate);
       const omega2 = omega * omega;
-      const sqrt2 = Math.SQRT2;
-
-      const norm = 1 / (1 + sqrt2 * omega + omega2);
+      const norm = 1 / (1 + Math.SQRT2 * omega + omega2);
 
       // Butterworth 二阶低通系数
-      this.lpf_b0 = omega2 * norm;
-      this.lpf_b1 = 2 * this.lpf_b0;
-      this.lpf_b2 = this.lpf_b0;
 
-      this.lpf_a1 = 2 * (omega2 - 1) * norm;
-      this.lpf_a2 = (1 - sqrt2 * omega + omega2) * norm;
+      this.b0 = omega2 * norm;
+      this.b1 = 2 * this.b0;
+      this.b2 = this.b0;
+
+      this.a1 = 2 * (omega2 - 1) * norm;
+      this.a2 = (1 - Math.SQRT2 * omega + omega2) * norm;
     }
+
     /**
-     * 变速重采样（语音优化版）
+     * 变速重采样
      * 技术：
      * - 相位累加（Phase Accumulation）
      * - 四点 Hermite 插值（Catmull-Rom）
@@ -162,89 +181,79 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
      */
     public resampleAndOutput(
       outputChannels: Float32Array[],
-      frameOutputSamples: number,
-      currentReadSamplesPerFrame: number
+      frameSamples: number, // 目标输出长度（128）
+      consumeSamples: number // 实际消耗的原始样本数（如 130，代表加速）
     ) {
-      const speed = currentReadSamplesPerFrame / frameOutputSamples;
-      const outputBufferQueue = this.outputBufferQueue;
+      /** 当前播放速度（小数） */
+      const rate = consumeSamples / frameSamples;
+      if (this.outputBufferQueueSampleCount < consumeSamples) return;
 
-      if (this.outputBufferQueueSampleCount < currentReadSamplesPerFrame) return;
-      // const oldOutputQueueReadSampleIndex = this.outputQueueReadSampleIndex;
-      // const oldOutputQueueReadBufferIndex = this.outputQueueReadBufferIndex;
-
-      let localBufIndex = this.outputQueueReadBufferIndex;
-      let localSampleIndex = this.outputQueueReadSampleIndex;
+      let bufIdx = this.outputQueueReadBufferIndex;
+      let sampleIdx = this.outputQueueReadSampleIndex;
 
       // ==========================================
       // 3. 更新二阶低通（cutoff 随 speed）
       // ==========================================
-      this.updateLowPassFilter(speed);
+      this.updateAntialiasingFilter(rate);
 
       // ==========================================
       // 4. 重采样主循环
       // ==========================================
-      let lastInt = 0;
-      let ttt = 0;
-      for (let i = 0; i <= frameOutputSamples; i++) {
-        const phase = speed * i;
-        const intP = phase | 0;
-        const t = phase - intP;
+      let lastPhaseInt = 0;
+      for (let i = 0; i <= frameSamples; i++) {
+        const isEnd = i === frameSamples;
+        const phase = rate * i;
+        // 最后一步强制对齐到 consumeSamples，解决浮点数 0.999999 精度问题
+        const intP = isEnd ? Math.round(phase) : phase | 0;
+        const t = phase - intP; // 插值权重
 
-        const delta = intP - lastInt;
+        const delta = intP - lastPhaseInt;
         if (delta > 0) {
-          localSampleIndex += delta;
-          ttt += delta;
-          while (
-            localBufIndex < outputBufferQueue.length &&
-            localSampleIndex >= outputBufferQueue[localBufIndex].length
-          ) {
-            localSampleIndex -= outputBufferQueue[localBufIndex].length;
-            localBufIndex++;
+          sampleIdx += delta;
+          // 移动游标：当游标超过当前 Buffer 长度时，跳到下一个 Buffer
+          while (bufIdx < this.outputBufferQueue.length && sampleIdx >= this.outputBufferQueue[bufIdx].length) {
+            sampleIdx -= this.outputBufferQueue[bufIdx].length;
+            bufIdx++;
           }
-          lastInt = intP;
+          lastPhaseInt = intP;
         }
-        if (i === frameOutputSamples) break;
 
-        /**
-         * 取 4 个点：
-         * x[-1], x[0], x[1], x[2]
-         */
-        const xm1 = this.sampleAt(localBufIndex, localSampleIndex - 1);
-        const x0 = this.sampleAt(localBufIndex, localSampleIndex);
-        const x1 = this.sampleAt(localBufIndex, localSampleIndex + 1);
-        const x2 = this.sampleAt(localBufIndex, localSampleIndex + 2);
+        if (isEnd) break; // 游标移动完毕，退出，不进行最后的越界采样
+
+        // Hermite 四点插值：获取当前位置周围的 4 个点
+        const x_m1 = this.getSampleWithOffset(bufIdx, sampleIdx - 1);
+        const x_0 = this.getSampleWithOffset(bufIdx, sampleIdx);
+        const x_1 = this.getSampleWithOffset(bufIdx, sampleIdx + 1);
+        const x_2 = this.getSampleWithOffset(bufIdx, sampleIdx + 2);
 
         // ======================================
         // Hermite (Catmull-Rom) 插值
         // ======================================
-        const c0 = x0;
-        const c1 = 0.5 * (x1 - xm1);
-        const c2 = xm1 - 2.5 * x0 + 2 * x1 - 0.5 * x2;
-        const c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
+        const c0 = x_0;
+        const c1 = 0.5 * (x_1 - x_m1);
+        const c2 = x_m1 - 2.5 * x_0 + 2 * x_1 - 0.5 * x_2;
+        const c3 = 0.5 * (x_2 - x_m1) + 1.5 * (x_0 - x_1);
+        const rawInterp = ((c3 * t + c2) * t + c1) * t + c0;
 
-        const interp = ((c3 * t + c2) * t + c1) * t + c0;
-
-        // ======================================
-        // 二阶 Butterworth 低通
-        // ======================================
+        // 二阶 Butterworth 低通 (Direct Form I)
         const y =
-          this.lpf_b0 * interp +
-          this.lpf_b1 * this.lpfInput1 +
-          this.lpf_b2 * this.lpfInput2 -
-          this.lpf_a1 * this.lpfOutput1 -
-          this.lpf_a2 * this.lpfOutput2;
+          this.b0 * rawInterp +
+          this.b1 * this.lpfX1 +
+          this.b2 * this.lpfX2 -
+          this.a1 * this.lpfY1 -
+          this.a2 * this.lpfY2;
+        this.lpfX2 = this.lpfX1;
+        this.lpfX1 = rawInterp;
+        this.lpfY2 = this.lpfY1;
+        this.lpfY1 = y;
 
-        this.lpfInput2 = this.lpfInput1;
-        this.lpfInput1 = interp;
-        this.lpfOutput2 = this.lpfOutput1;
-        this.lpfOutput1 = y;
-        // 写入输出
         for (const ch of outputChannels) ch[i] = y;
-        // 推进相位
       }
 
-      this.outputQueueReadSampleIndex = localSampleIndex;
-      this.outputQueueReadBufferIndex = localBufIndex;
+      // 同步回成员变量
+      this.outputQueueReadSampleIndex = sampleIdx;
+      this.outputQueueReadBufferIndex = bufIdx;
+      this.outputBufferQueueSampleCount -= consumeSamples;
       // this.syncAt(currentReadSamplesPerFrame, oldOutputQueueReadSampleIndex, oldOutputQueueReadBufferIndex);
       // ttt !== currentReadSamplesPerFrame &&
       //   console.log(
@@ -255,29 +264,25 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       //     frameOutputSamples === 128 ? "" : frameOutputSamples,
       //     localBufIndex
       //   );
-      this.outputBufferQueueSampleCount -= currentReadSamplesPerFrame;
     }
-    // ==========================================
-    // 1x 速播放
-    // ==========================================
-    public outputNormalSpeed(outputChannels: Float32Array[], frameOutputSamples: number) {
-      const outputBufferQueue = this.outputBufferQueue;
 
+    /** 标准 1x 速播放（优化路径：直接内存拷贝） */
+    public outputNormalSpeed(outputChannels: Float32Array[], frameSamples: number): boolean {
       let written = 0;
       /** 每次循环只处理outputBufferQueue的一个元素 */
-      while (written < frameOutputSamples && this.outputBufferQueueSampleCount > 0) {
-        const buf = outputBufferQueue[this.outputQueueReadBufferIndex];
+      while (written < frameSamples && this.outputBufferQueueSampleCount > 0) {
+        const buf = this.outputBufferQueue[this.outputQueueReadBufferIndex];
         if (!buf) break;
         /** 计算当前块能写入多少数据（剩余空间 vs 当前块长度） */
-        const remainInBuf = buf.length - this.outputQueueReadSampleIndex;
+        const available = buf.length - this.outputQueueReadSampleIndex;
         /** 计算当前块需要写入多少数据（剩余数据 vs 所需数据） */
-        const need = frameOutputSamples - written;
+        const need = frameSamples - written;
         /** 计算实际写入数据量（取剩余空间和所需数据的较小值） */
-        const copyCount = Math.min(remainInBuf, need);
+        const copyCount = Math.min(available, need);
         /** 从当前块提取数据（从游标位置开始，长度为 copyCount） */
-        const subBuffer = buf.subarray(this.outputQueueReadSampleIndex, this.outputQueueReadSampleIndex + copyCount);
+        const chunk = buf.subarray(this.outputQueueReadSampleIndex, this.outputQueueReadSampleIndex + copyCount);
         // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
-        for (const ch of outputChannels) ch.set(subBuffer, written);
+        for (const ch of outputChannels) ch.set(chunk, written);
 
         this.outputQueueReadSampleIndex += copyCount;
         this.outputBufferQueueSampleCount -= copyCount;
@@ -289,16 +294,21 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         }
       }
       /**  如果数据不够填满一帧（例如网络卡顿），剩余部分补 0（静音） */
-      if (written < frameOutputSamples) {
+      if (written < frameSamples) {
         // 将数据写入所有声道（通常 output 有 1 或 2 个声道）
         for (const ch of outputChannels) ch.fill(0, written);
-        return false;
+        return false; // 缓冲不足，产生欠载
       }
 
       return true;
     }
   }
-  class CalcRate {
+
+  /**
+   * 速率计算控制器
+   * 负责：根据当前缓冲区深度，决定下一帧是 1.0x 还是加速
+   */
+  class BufferRateController {
     // private currentReadSamplesPerFrame = this.processorBuffer.processFrameSize;
     /** 累计已播放的样本数（统计用途） */
     // private totalOutputSamples = 0;
@@ -415,6 +425,8 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       };
     }
   }
+
+  // === 注册 AudioWorkletProcessor ===
   registerProcessor(
     registerProcessorName,
     class extends AudioWorkletProcessor {
@@ -422,8 +434,8 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       // 基础配置
       // ==========================================
 
-      private rateOutput = new RateOutput();
-      private calcRate = new CalcRate(this.rateOutput.processFrameSize);
+      private engine = new ResamplerEngine();
+      private controller = new BufferRateController(this.engine.processFrameSize);
 
       constructor() {
         super();
@@ -431,54 +443,52 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         // ===============================
         // 接收主线程推送的播放数据
         // ===============================
-        this.port.onmessage = ({ data }: MessageEvent) => this.rateOutput.onOutputData(data.buffer);
+        this.port.onmessage = ({ data }) => this.engine.onOutputData(data.buffer);
       }
 
       /**
        * AudioWorklet 主处理函数
        * 每 128 个采样点 (Quantum) 执行一次
        */
-      process(inputs: Float32Array[][], outputs: Float32Array[][]): true {
-        const bufferToSend = this.rateOutput.onInputData(inputs);
-        if (bufferToSend) {
+      process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
+        // 1. 处理录音
+        const inputBuffer = this.engine.onInputData(inputs);
+        if (inputBuffer) {
+          const message: IAudioInputOutputProcessorMessage = {
+            buffer: inputBuffer,
+            sampleRate,
+            // 附带当前的播放状态供调试/监控
+            outputSampleCount: this.engine.outputBufferQueueSampleCount,
+            ...this.controller.statistics,
+          };
           // 发送，并利用第二个参数声明“转移所有权”
           // 注意：转移的是 ArrayBuffer，而不是 Float32Array 视图
-          this.port.postMessage(
-            {
-              buffer: bufferToSend.slice(),
-              sampleRate: sampleRate,
-              // 附带当前的播放状态供调试/监控
-              outputSampleCount: this.rateOutput.outputBufferQueueSampleCount,
-              ...this.calcRate.statistics,
-            }
-            // 零拷贝转移所有权 (Transferable Objects)
-            // [bufferToSend.buffer]
-          );
+          this.port.postMessage(message, [inputBuffer.buffer]); // 零拷贝转移所有权
         }
 
-        // ==========================================
-        // 2. 播放处理（Queue -> Output）
-        // ==========================================
+        // 2. 处理播放（Queue -> Output）
         const outputChannels = outputs[0];
         /** 输出缓存大小（对应一次 postMessage 的数据量） */
-        const frameOutputSamples = outputChannels[0].length;
+        const frameSamples = outputChannels[0].length;
 
-        // this.totalOutputSamples += frameOutputSamples;
-        const currentReadSamplesPerFrame = this.calcRate.process(
-          frameOutputSamples,
-          this.rateOutput.outputBufferQueueSampleCount,
-          this.rateOutput.processFrameSize
+        const consume = this.controller.process(
+          frameSamples,
+          this.engine.outputBufferQueueSampleCount,
+          this.engine.processFrameSize
         );
-        if (currentReadSamplesPerFrame === this.rateOutput.processFrameSize) {
-          // ===== 策略 A：1x 直接拷贝 =====
-          if (this.rateOutput.outputNormalSpeed(outputChannels, frameOutputSamples) === false) this.calcRate.reset();
+
+        if (consume === this.engine.processFrameSize) {
+          // 1x速：高性能路径
+          if (!this.engine.outputNormalSpeed(outputChannels, frameSamples)) {
+            // 缓存不足，重置控制器
+            this.controller.reset();
+          }
         } else {
-          /** 策略 B：变速播放 (1.x ~ 2.0 倍速，需重采样) */
-          this.rateOutput.resampleAndOutput(outputChannels, frameOutputSamples, currentReadSamplesPerFrame);
+          // 变速：重采样路径  (1.x ~ 2.0 倍速)
+          this.engine.resampleAndOutput(outputChannels, frameSamples, consume);
         }
-        /** 压缩输出队列，移除已播放部分 */
-        this.rateOutput.compactOutputQueue();
-        // 返回 true 保持处理器存活
+
+        this.engine.compactQueue();
         return true;
       }
     }
@@ -492,9 +502,8 @@ export class AudioInputOutputProcessor {
   constructor(
     mediaStream?: MediaStream,
     blockSize = 512,
-    ctx = new AudioContext({
-      sampleRate: 48000, // 强制要求浏览器以此频率运行 Worklet
-    })
+    // 强制要求浏览器以此频率运行 Worklet
+    ctx = new AudioContext({ sampleRate: 48000 })
   ) {
     this.audioContext = ctx;
 
@@ -510,10 +519,7 @@ export class AudioInputOutputProcessor {
       this.audioNode = new AudioWorkletNode(ctx, registerProcessorName);
       if (mediaStream) ctx.createMediaStreamSource(mediaStream).connect(this.audioNode);
       this.audioNode.connect(ctx.destination);
-      this.audioNode.port.onmessage = ({
-        data: { buffer, sampleRate, outputSampleCount, outputPlaySpeed, stableSamples, playSpeedx1SampleCount },
-      }) =>
-        this.onInputData(buffer, sampleRate, outputSampleCount, outputPlaySpeed, stableSamples, playSpeedx1SampleCount);
+      this.audioNode.port.onmessage = ({ data }) => this.onInputData(data);
     });
     this.initing.catch(e => alert(e));
 
@@ -527,14 +533,14 @@ export class AudioInputOutputProcessor {
   }
 
   // overwrite
-  public onInputData(
-    buffer: Float32Array,
-    sampleRate: number,
-    outputSampleCount: number,
-    outputPlaySpeed: number,
-    stableSamples: number,
-    playSpeedx1SampleCount: number
-  ) {
+  public onInputData({
+    buffer,
+    sampleRate,
+    outputSampleCount,
+    outputPlaySpeed,
+    stableSamples,
+    playSpeedx1SampleCount,
+  }: IAudioInputOutputProcessorMessage) {
     console.log(
       "onInputData",
       buffer,
