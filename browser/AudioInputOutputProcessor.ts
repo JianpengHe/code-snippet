@@ -1,17 +1,13 @@
+/// <reference types="@types/audioworklet" />
 const registerProcessorName = "audioInputOutput";
 
 const registerProcessorFn = String((registerProcessorName: string, blockSize: number) => {
-  //@ts-ignore
   registerProcessor(
     registerProcessorName,
-    //@ts-ignore
     class extends AudioWorkletProcessor {
       // ==========================================
       // 基础配置
       // ==========================================
-      /** 当前 AudioWorklet 的采样率（兜底 48k） */
-      //@ts-ignore
-      private readonly sampleRate = sampleRate || 48000;
 
       // ==========================================
       // 录音部分 (Mic -> Main Thread)
@@ -44,13 +40,13 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       // 自适应缓冲控制 (Adaptive Buffer Control)
       // ==========================================
       /** 最小安全缓冲阈值（80ms），低于此值可能发生卡顿 */
-      private readonly minSafeBufferSamples = this.sampleRate * 0.08;
+      private readonly minSafeBufferSamples = sampleRate * 0.08;
 
       /** 动态目标缓冲大小（根据网络抖动自动调整） */
-      private targetBufferSamples = this.sampleRate * 0.1;
+      private targetBufferSamples = sampleRate * 0.1;
 
       /** 极端积压阈值（5 秒），超过后强制 2 倍速追帧 */
-      private readonly panicBufferSamples = this.sampleRate * 5;
+      private readonly panicBufferSamples = sampleRate * 5;
 
       /** 连续稳定运行的样本数（用于评估网络质量） */
       private stableRunningSamples = 0;
@@ -59,7 +55,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       // 预测与平滑控制参数
       // ==========================================
       /** 预测周期：每隔一定样本数重新计算目标缓冲 */
-      private readonly PREDICT_INTERVAL_SAMPLES = this.sampleRate * 3;
+      private readonly PREDICT_INTERVAL_SAMPLES = sampleRate * 3;
       /** 距离上次预测经过的样本数 */
       private samplesSinceLastPrediction = 0;
 
@@ -83,7 +79,6 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         // ===============================
         // 接收主线程推送的播放数据
         // ===============================
-        //@ts-ignore
         this.port.onmessage = ({ data }: MessageEvent) => {
           const audioChunk: Float32Array = data.buffer;
           this.outputBufferQueue.push(audioChunk);
@@ -113,7 +108,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         }
         // 计算缩减比率
         // 稳定半衰期：约 10秒
-        const STABLE_HALF_LIFE = this.sampleRate * 1;
+        const STABLE_HALF_LIFE = sampleRate * 1;
         const MAX_REDUCE_RATIO = 0.8;
         const SAFE_MARGIN = this.minSafeBufferSamples;
 
@@ -131,7 +126,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         const suggested = this.targetBufferSamples - bufferedSamples * (1 - reduceRatio);
 
         // 限制在 [最小安全值, 1 秒]
-        this.targetBufferSamples = Math.min(Math.max(suggested, this.minSafeBufferSamples), this.sampleRate);
+        this.targetBufferSamples = Math.min(Math.max(suggested, this.minSafeBufferSamples), sampleRate);
       }
 
       /**
@@ -180,7 +175,6 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
 
         // 录音缓冲满，发送给主线程
         if (this.recordWriteIndex >= this.recordBuffer.length) {
-          //@ts-ignore
           // this.port.postMessage({
           //   buffer: this.inputBuffer.slice(),
           //   // @ts-ignore
@@ -191,11 +185,10 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
           const bufferToSend = this.recordBuffer;
           // 2. 发送，并利用第二个参数声明“转移所有权”
           // 注意：转移的是 ArrayBuffer，而不是 Float32Array 视图
-          //@ts-ignore
           this.port.postMessage(
             {
               buffer: bufferToSend,
-              sampleRate: this.sampleRate,
+              sampleRate: sampleRate,
               // 附带当前的播放状态供调试/监控
               outputSampleCount: this.outputBufferQueueSampleCount,
               outputPlaySpeed: this.currentReadSamplesPerFrame,
@@ -243,7 +236,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         // ===== 语音安全参数 =====
         const baseCutoff = 8000; // 8kHz：语音上限
         const cutoff = Math.min(baseCutoff / speed, 9000); // 动态收紧
-        const fs = this.sampleRate;
+        const fs = sampleRate;
 
         // 预扭曲（双线性变换）
         const omega = Math.tan((Math.PI * cutoff) / fs);
@@ -411,7 +404,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
 
           this.stableRunningSamples = 0;
           // this.samplesSinceLastPredict = this.PREDICT_INTERVAL_SAMPLES; // 立即触发下一次预测
-          this.targetBufferSamples = Math.min(this.targetBufferSamples + this.sampleRate * 0.005, this.sampleRate);
+          this.targetBufferSamples = Math.min(this.targetBufferSamples + sampleRate * 0.005, sampleRate);
           this.samplesSinceLastPrediction = 0;
         }
 
