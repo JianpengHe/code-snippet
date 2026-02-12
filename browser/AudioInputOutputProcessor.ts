@@ -8,14 +8,14 @@ export type IAudioInputOutputProcessorMessage = {
   /** 当前输出缓冲区样本数 */
   outputSampleCount: number;
   /** 当前输出播放速度 */
-  outputPlaySpeed: number;
+  outputPlaySpeed: string;
   /** 当前稳定播放的样本数 */
   stableSamples: number;
   /** 当前缓存的样本数 */
   playSpeedx1SampleCount: number;
 };
 
-const registerProcessorFn = String((registerProcessorName, blockSize) => {
+const registerProcessorFn = String((registerProcessorName: string, blockSize: number) => {
   /**
    * 基础缓冲区管理类
    * 负责：录音数据的累积、播放队列的管理、样本级别的精确查找
@@ -322,6 +322,9 @@ const registerProcessorFn = String((registerProcessorName, blockSize) => {
     /** 动态目标缓冲大小（根据网络抖动自动调整） */
     private targetBufferSamples = sampleRate * 0.1;
 
+    /** 最大允许加速倍率 */
+    private readonly MAX_SPEED = 1.3;
+
     /** 极端积压阈值（5 秒），超过后强制 2 倍速追帧 */
     private readonly panicBufferSamples = sampleRate * 5;
 
@@ -335,6 +338,12 @@ const registerProcessorFn = String((registerProcessorName, blockSize) => {
     private readonly PREDICT_INTERVAL_SAMPLES = sampleRate * 3;
     /** 距离上次预测经过的样本数 */
     private samplesSinceLastPrediction = 0;
+
+    /** 当前实际播放速率 */
+    private currentSpeed = 1.0;
+
+    /** 加速平滑系数（越小越慢） */
+    private readonly SMOOTH_ALPHA = 0.00008;
 
     constructor(/** 当前播放速率对应的“读取样本数”（以 128 为 1x） */ private currentReadSamplesPerFrame: number) {}
     /**
@@ -381,15 +390,15 @@ const registerProcessorFn = String((registerProcessorName, blockSize) => {
     /**
      * 计算当前应使用的播放速率
      */
-    private calculateReadSamplesPerFrame(outputBufferQueueSampleCount: number, processFrameSize: number): number {
-      // 极端积压：直接 2 倍速
-      if (outputBufferQueueSampleCount > this.panicBufferSamples) return processFrameSize * 2;
+    private calculateTargetSpeed(outputBufferQueueSampleCount: number): number {
+      // 极端积压：直接 MAX_SPEED 倍速
+      if (outputBufferQueueSampleCount > this.panicBufferSamples) return this.MAX_SPEED;
 
       // 更新目标缓冲水位线
       this.updateTargetBufferSamples(outputBufferQueueSampleCount);
 
       // 缓冲健康：正常 1 倍速
-      if (outputBufferQueueSampleCount < this.targetBufferSamples) return processFrameSize;
+      if (outputBufferQueueSampleCount < this.targetBufferSamples) return 1;
 
       // 缓冲偏多 -> 线性插值计算加速倍率 (1.0 ~ 2.0 之间平滑过渡)
       const speedFactor =
@@ -397,29 +406,44 @@ const registerProcessorFn = String((registerProcessorName, blockSize) => {
         (outputBufferQueueSampleCount - this.targetBufferSamples) /
           (this.panicBufferSamples - this.targetBufferSamples);
 
-      return Math.round(processFrameSize * speedFactor);
+      return Math.min(speedFactor, this.MAX_SPEED);
     }
     public process(frameOutputSamples: number, outputBufferQueueSampleCount: number, processFrameSize: number) {
       /** 稳定运行时间（用于计算播放速率） */
       this.stableRunningSamples += frameOutputSamples;
       // 预测节流计时
       this.samplesSinceLastPrediction += frameOutputSamples;
-      // 计算播放速度
-      this.currentReadSamplesPerFrame = this.calculateReadSamplesPerFrame(
-        outputBufferQueueSampleCount,
-        processFrameSize
-      );
+
+      const targetSpeed = this.calculateTargetSpeed(outputBufferQueueSampleCount);
+
+      // ================================
+      // 核心改动：只对“加速”做平滑
+      // ================================
+      if (targetSpeed > this.currentSpeed) {
+        // 加速 → 平滑
+        this.currentSpeed += (targetSpeed - this.currentSpeed) * this.SMOOTH_ALPHA;
+      } else {
+        // 降速 → 立即
+        this.currentSpeed = targetSpeed;
+      }
+
+      this.currentReadSamplesPerFrame = Math.round(processFrameSize * this.currentSpeed);
+
       return this.currentReadSamplesPerFrame;
     }
+
     public reset() {
       this.stableRunningSamples = 0;
-      // this.samplesSinceLastPredict = this.PREDICT_INTERVAL_SAMPLES; // 立即触发下一次预测
-      this.targetBufferSamples = Math.min(this.targetBufferSamples + sampleRate * 0.005, sampleRate);
       this.samplesSinceLastPrediction = 0;
+
+      // 立刻回到 1x
+      this.currentSpeed = 1.0;
+
+      this.targetBufferSamples = Math.min(this.targetBufferSamples + sampleRate * 0.005, sampleRate);
     }
     public get statistics() {
       return {
-        outputPlaySpeed: this.currentReadSamplesPerFrame,
+        outputPlaySpeed: `+${this.currentReadSamplesPerFrame - 128}`,
         stableSamples: this.stableRunningSamples,
         playSpeedx1SampleCount: this.targetBufferSamples,
       };
