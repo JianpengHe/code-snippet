@@ -316,16 +316,16 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
     // ==========================================
     // 自适应缓冲控制 (Adaptive Buffer Control)
     // ==========================================
-    /** 最小安全缓冲阈值（80ms），低于此值可能发生卡顿 */
-    private readonly minSafeBufferSamples = sampleRate * 0.08;
+    /** 最小安全缓冲阈值（50ms），低于此值可能发生卡顿 */
+    private readonly minSafeBufferSamples = sampleRate * 0.05;
 
     /** 动态目标缓冲大小（根据网络抖动自动调整） */
     private targetBufferSamples = sampleRate * 0.1;
 
     /** 最大允许加速倍率 */
-    private readonly MAX_SPEED = 1.3;
+    private readonly MAX_SPEED = 1.6;
 
-    /** 极端积压阈值（5 秒），超过后强制 2 倍速追帧 */
+    /** 极端积压阈值（5 秒），超过后强制最大倍速追帧 */
     private readonly panicBufferSamples = sampleRate * 5;
 
     /** 连续稳定运行的样本数（用于评估网络质量） */
@@ -343,9 +343,13 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
     private currentSpeed = 1.0;
 
     /** 加速平滑系数（越小越慢） */
-    private readonly SMOOTH_ALPHA = 0.00008;
+    private readonly SMOOTH_ALPHA = 0.0001;
 
-    constructor(/** 当前播放速率对应的“读取样本数”（以 128 为 1x） */ private currentReadSamplesPerFrame: number) {}
+    constructor(
+      /** 当前播放速率对应的“读取样本数”（以 128 为 1x） */
+      private currentReadSamplesPerFrame: number
+    ) {}
+
     /**
      * 核心算法：根据网络稳定性预测最佳缓冲大小
      * * 原理：
@@ -364,9 +368,10 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         this.targetBufferSamples = this.minSafeBufferSamples;
         return;
       }
+
       // 计算缩减比率
-      // 稳定半衰期：约 10秒
-      const STABLE_HALF_LIFE = sampleRate * 1;
+      // 稳定半衰期：约 1秒
+      const STABLE_HALF_LIFE = sampleRate;
       const MAX_REDUCE_RATIO = 0.8;
       const SAFE_MARGIN = this.minSafeBufferSamples;
 
@@ -380,15 +385,16 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       // 综合缩减比率
       const reduceRatio = MAX_REDUCE_RATIO * stabilityFactor * safetyFactor;
 
-      // 计算建议的新缓冲大小
-      const suggested = this.targetBufferSamples - bufferedSamples * (1 - reduceRatio);
+      // 计算建议的新缓冲大小（逐步逼近 minSafe，而不是随 buffer 线性下降）
+      const suggested =
+        this.targetBufferSamples - (this.targetBufferSamples - this.minSafeBufferSamples) * (1 - reduceRatio);
 
       // 限制在 [最小安全值, 1 秒]
       this.targetBufferSamples = Math.min(Math.max(suggested, this.minSafeBufferSamples), sampleRate);
     }
 
     /**
-     * 计算当前应使用的播放速率
+     * 计算当前应使用的播放速率（最终速率不会低于 1x）
      */
     private calculateTargetSpeed(outputBufferQueueSampleCount: number): number {
       // 极端积压：直接 MAX_SPEED 倍速
@@ -400,7 +406,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
       // 缓冲健康：正常 1 倍速
       if (outputBufferQueueSampleCount < this.targetBufferSamples) return 1;
 
-      // 缓冲偏多 -> 线性插值计算加速倍率 (1.0 ~ 2.0 之间平滑过渡)
+      // 缓冲偏多 -> 线性插值计算加速倍率
       const speedFactor =
         1 +
         (outputBufferQueueSampleCount - this.targetBufferSamples) /
@@ -408,13 +414,37 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
 
       return Math.min(speedFactor, this.MAX_SPEED);
     }
-    public process(frameOutputSamples: number, outputBufferQueueSampleCount: number, processFrameSize: number) {
-      /** 稳定运行时间（用于计算播放速率） */
-      this.stableRunningSamples += frameOutputSamples;
-      // 预测节流计时
-      this.samplesSinceLastPrediction += frameOutputSamples;
 
-      const targetSpeed = this.calculateTargetSpeed(outputBufferQueueSampleCount);
+    /**
+     * 处理一次需要多少音频数据
+     * @param frameOutputSamples 一次处理输出样本数（通常为 128）
+     * @param outputBufferQueueSampleCount 当前输出缓存队列中的样本数
+     * @returns 实际应该读取的样本数（根据当前播放速率）
+     */
+    public process(frameOutputSamples: number, outputBufferQueueSampleCount: number) {
+      /** 稳定运行时间（用于计算播放速率）
+       */
+      // if (this.currentSpeed === 1) {
+      this.stableRunningSamples += frameOutputSamples;
+      // } else {
+      //   // 发生追帧说明网络不稳定，稳定计数回退（避免误判为长期稳定）
+      //   this.stableRunningSamples *= 0.98;
+      // }
+
+      // 预测节流计时
+      this.samplesSinceLastPrediction =
+        outputBufferQueueSampleCount < 0
+          ? -this.PREDICT_INTERVAL_SAMPLES
+          : this.samplesSinceLastPrediction + frameOutputSamples;
+
+      /** 发生卡顿了 **/
+      if (this.samplesSinceLastPrediction < 0) {
+        /** 发生卡顿了，并且还没有缓存，直接1倍数 */
+        this.currentSpeed = 1;
+        return (this.currentReadSamplesPerFrame = frameOutputSamples);
+      }
+
+      const targetSpeed = Math.max(1, this.calculateTargetSpeed(outputBufferQueueSampleCount));
 
       // ================================
       // 核心改动：只对“加速”做平滑
@@ -427,20 +457,22 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         this.currentSpeed = targetSpeed;
       }
 
-      this.currentReadSamplesPerFrame = Math.round(processFrameSize * this.currentSpeed);
-
-      return this.currentReadSamplesPerFrame;
+      return (this.currentReadSamplesPerFrame = Math.round(frameOutputSamples * this.currentSpeed));
     }
 
     public reset() {
       this.stableRunningSamples = 0;
-      this.samplesSinceLastPrediction = 0;
+
+      /** 发生卡顿了，直接加一个预测周期的CD，锁死1倍速 */
+      this.samplesSinceLastPrediction = -this.PREDICT_INTERVAL_SAMPLES;
 
       // 立刻回到 1x
-      this.currentSpeed = 1.0;
+      this.currentSpeed = 1;
 
+      // 卡顿后适当提高安全缓冲
       this.targetBufferSamples = Math.min(this.targetBufferSamples + sampleRate * 0.005, sampleRate);
     }
+
     public get statistics() {
       return {
         outputPlaySpeed: `+${this.currentReadSamplesPerFrame - 128}`,
@@ -495,11 +527,7 @@ const registerProcessorFn = String((registerProcessorName: string, blockSize: nu
         /** 输出缓存大小（对应一次 postMessage 的数据量） */
         const frameSamples = outputChannels[0].length;
 
-        const consume = this.controller.process(
-          frameSamples,
-          this.engine.outputBufferQueueSampleCount,
-          this.engine.processFrameSize
-        );
+        const consume = this.controller.process(frameSamples, this.engine.outputBufferQueueSampleCount);
 
         if (consume === this.engine.processFrameSize) {
           // 1x速：高性能路径
