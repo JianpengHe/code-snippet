@@ -574,14 +574,6 @@ export class AudioInputOutputProcessor {
       this.audioNode.port.onmessage = ({ data }) => this.onInputData(data);
     });
     this.initing.catch(e => alert(e));
-
-    const fn = () => {
-      ctx.resume();
-      if (!document.hidden) navigator.wakeLock.request("screen");
-    };
-    window.addEventListener("click", fn, { once: true });
-    window.addEventListener("visibilitychange", fn);
-    ctx.addEventListener("statechange", fn);
   }
 
   // overwrite
