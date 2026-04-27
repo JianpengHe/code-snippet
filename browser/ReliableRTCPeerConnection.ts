@@ -364,10 +364,11 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
             this.log("作为 'offer' 方，忽略收到的 'offer'。");
             return;
           }
-          if (this.peerConnection?.connectionState === "connected") {
-            this.log("⚠️ 连接已存在，忽略新的 'offer'。");
-            return;
-          }
+          // 删除拦截：如果对方重新发起 offer，说明对方可能断线重连了，此时即使我们是 connected 也应该接受并重新协商
+          // if (this.peerConnection?.connectionState === "connected") {
+          //   this.log("⚠️ 连接已存在，忽略新的 'offer'。");
+          //   return;
+          // }
 
           this.log("收到 Offer，准备创建 Answer...");
           // 如果当前 PeerConnection 状态不适合接收 Offer，则重新初始化。
@@ -406,6 +407,14 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
           if (this.peerConnection?.signalingState === "have-local-offer") {
             await this.peerConnection.setRemoteDescription({ type: "answer", sdp: data });
             this.log("✅ [发起方] 已设置 Remote Description (Answer)。");
+
+            // 修复：添加之前缓存的 ICE 候选者（Offerer 收到 Answer 后也需要处理提前到达的 candidate）
+            for (const candidate of this.pendingCandidates) {
+              await this.peerConnection!.addIceCandidate(candidate).catch(err => {
+                this.log("添加缓存的 ICE 候选者失败:", err);
+              });
+            }
+            this.pendingCandidates.length = 0;
           } else {
             this.log(`收到意外的 Answer，当前状态: ${this.peerConnection?.signalingState}`);
           }
