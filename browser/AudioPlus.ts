@@ -43,7 +43,7 @@ export class AudioPlus {
     return this.isInstrumental;
   }
 
-  private micInfo: {
+  public micInfo: {
     stream: MediaStream;
     node: ChannelMergerNode;
     gain: GainNode;
