@@ -14,7 +14,7 @@ export type INode7zInfo = {
 export type INode7zProgress = {
   raw: string;
   progress: number;
-  fileIndex: number;
+  // fileIndex: number;
   file: string;
 };
 
@@ -35,13 +35,12 @@ export class Node7z extends MyEvent<INode7zEvent> {
     this.subprocess.stdout.on("data", (msg: Buffer) => {
       if (!msg) return;
       const raw = String(msg).trim();
+
       if (msg[0] === 0x0d && msg[1] === 0x20) {
-        const [_, progress, fileIndex, file] =
-          String(msg)
-            .trim()
-            .match(/^(\d+)% (\d+) - (.+)$/) || [];
+        const [_, progress, fileIndex, file] = raw.match(/^(\d+)\% (.+) (\S+)$/) || [];
+        // console.log([raw], progress, fileIndex, file);
         if (file) {
-          this.emit("progress", { raw, progress: Number(progress) / 100, fileIndex: Number(fileIndex), file });
+          this.emit("progress", { raw, progress: Number(progress) / 100, file });
           return;
         }
         this.emit("info", { raw });
