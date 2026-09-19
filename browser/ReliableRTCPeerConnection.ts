@@ -9,8 +9,8 @@ import { MyEvent } from "../common/手写事件";
  * 这是 WebRTC 建立连接所必须的“握手”过程。
  */
 export type SignalingMessage =
-  // "join" 消息：用于通知对方加入或重新协商，并建议对方的角色。
-  | { type: "join"; data: "offer" | "answer" }
+  // "join" 消息：用于通知对方加入或重新协商，携带随机ID以解决并发冲突。
+  | { type: "join"; data: string }
   // "offer" 消息：包含 SDP (Session Description Protocol)，描述了发起方的媒体能力和网络信息。
   | { type: "offer"; data: string }
   // "answer" 消息：对 "offer" 的响应，包含应答方的 SDP。
@@ -51,6 +51,9 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
    */
   public role: "offer" | "answer" = "answer";
 
+  /** 用于在同时加入时解决角色冲突的随机ID */
+  private myId = Math.random().toString(36).substring(2);
+
   /**
    * RTCPeerConnection 的原生实例。
    */
@@ -90,13 +93,12 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
    */
   public start(): void {
     this.cleanupPeerConnection();
-    // 默认将后加入者设定为 "answer" 方，等待对方发起 "offer"。
+    this.myId = Math.random().toString(36).substring(2);
+    // 默认初始化为 "answer" 方，等待角色协商
     this.role = "answer";
     this.log("我的角色已初始化为: " + this.role);
-    // 异步发送 "join" 信号，通知对方自己的存在，并建议对方成为 "offer" 方。
-    Promise.resolve().then(() =>
-      this.emit("signaling", { type: "join", data: this.role === "answer" ? "offer" : "answer" })
-    );
+    // 异步发送 "join" 信号，携带自己的 ID 用于角色协商
+    Promise.resolve().then(() => this.emit("signaling", { type: "join", data: this.myId }));
   }
 
   /**
@@ -243,13 +245,13 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
         break;
 
       case "disconnected":
-        this.log("⚠️ WebRTC 连接断开，尝试重连...");
-        // 添加随机延迟，避免双方同时发起重连导致冲突
+        this.log("⚠️ WebRTC 连接断开，等待可能的网络恢复...");
+        // 延长断开状态的等待时间，避免网络短暂波动直接销毁连接（给原生的 ICE 恢复留出时间）
         if (!this.reconnectTimerId && !this.isClosed) {
           this.reconnectTimerId = window.setTimeout(() => {
             this.reconnectTimerId = 0;
             this.reconnect();
-          }, 1000 + Math.random() * 1000);
+          }, 5000 + Math.random() * 2000);
         }
         break;
 
@@ -352,9 +354,13 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
     try {
       switch (type) {
         case "join":
-          this.log("对方请求协商，我方将成为指定的角色并发起连接。");
-          this.role = data;
-          this.log("我的新角色是: " + this.role);
+          // 通过比较 ID 大小来决定角色，避免双方同时发出 join 导致都变成 offer 的死锁问题
+          if (this.myId > data) {
+            this.role = "offer";
+          } else {
+            this.role = "answer";
+          }
+          this.log(`对方请求协商，根据 ID 比较，我的新角色是: ${this.role}`);
           this.currentReconnectAttempt = 0; // 重置重连计数
           this.reconnect(); // 作为指定角色重新开始连接流程
           break;
