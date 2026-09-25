@@ -23,10 +23,10 @@ export type IDataStorage<T = string> = {
   data: T;
 
   /** 从持久化数据中读取并转换为实际使用的数据类型。 */
-  read: (value: string) => T;
+  read: (value: string) => T | Promise<T>;
 
   /** 将当前数据转换为可持久化的字符串。 */
-  write: (value: T) => string;
+  write: (value: T) => string | Promise<string>;
 };
 
 /**
@@ -62,6 +62,8 @@ export type IDataStorage<T = string> = {
 export class DataStorage<T extends Record<string, IDataStorage<any>>> {
   /** 当前各数据项的配置和数据。 */
   private readonly dataMap: Partial<T> = {};
+  /** 等待初始化 */
+  public isInitialized: Promise<void>;
 
   constructor(
     /** 各数据项的默认值以及数据转换方式。 */
@@ -70,7 +72,7 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
     /** 持久化存储使用的路径或 key 前缀。 */
     private readonly storagePath: string
   ) {
-    this.syncAll();
+    this.isInitialized = this.syncAll();
   }
 
   /**
@@ -78,8 +80,8 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
    *
    * 如果某个数据项不存在，则继续使用初始化时设置的默认值。
    */
-  public syncAll(): void {
-    for (const key in this.storage) this.sync(key);
+  public async syncAll(): Promise<void> {
+    for (const key in this.storage) await this.sync(key);
   }
 
   /**
@@ -89,7 +91,7 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
    *
    * @param key 要同步的数据项名称。
    */
-  public sync<K extends keyof T>(key: K): void {
+  public async sync<K extends keyof T>(key: K): Promise<void> {
     const storage = this.storage[key];
     const storedValue = this.readFile(this.storagePath + String(key));
 
@@ -97,7 +99,7 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
       ...storage,
 
       // 持久化数据不存在时使用配置中提供的默认值。
-      data: storedValue === undefined ? storage.data : storage.read(storedValue),
+      data: storedValue === undefined ? storage.data : await storage.read(storedValue),
     };
   }
 
@@ -139,7 +141,11 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
     const storage = this.dataMap[key];
     if (!storage) throw new Error("key not found");
     storage.data = value;
-    this.writeFile(this.storagePath + String(key), storage.write(value));
+    (async () => {
+      let writeValue = storage.write(value);
+      if (writeValue instanceof Promise) writeValue = await writeValue;
+      this.writeFile(this.storagePath + String(key), writeValue);
+    })();
   }
 
   /**
@@ -152,8 +158,13 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
    */
   public readFile(path: string): string | undefined {
     if (!this.storagePath) return undefined;
-    if (fs) return String(fs.readFileSync(path, "utf-8"));
-    if (localStorage) return localStorage.getItem(path) ?? undefined;
+    try {
+      if (fs) return String(fs.readFileSync(path, "utf-8"));
+      if (localStorage) return localStorage.getItem(path) ?? undefined;
+    } catch (err) {
+      console.log(err);
+    }
+
     return undefined;
   }
 
