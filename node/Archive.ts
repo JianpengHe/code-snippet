@@ -2,7 +2,7 @@ import * as stream from "stream";
 import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
-import { RecvStreamPro } from "../../tools/src/node/RecvStreamPro";
+import { RecvStreamPro } from "../../tools/dist/node/RecvStreamPro";
 
 export type IAddFile = {
   fullPath?: string;

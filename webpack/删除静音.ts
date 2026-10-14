@@ -8,7 +8,7 @@ const SAMPLES_TO_TOGGLE = 24; // 连续多少帧触发切换（静音/非静音�
 
 // --- 状态变量 ---
 let isWritingEnabled = true; // true = 输出声音，false = 静音丢弃
-let triggerBuffer = []; // 缓存可能触发状态切换的样本
+let triggerBuffer: number[] = []; // 缓存可能触发状态切换的样本
 
 // --- 文件流 ---
 const readStream = fs.createReadStream(inputFileName);
@@ -20,7 +20,7 @@ let carryOverBuffer = Buffer.alloc(0);
 console.log(`开始处理文件，小端 16bit PCM，静音阈值: ${amplitudeThreshold}`);
 
 // 数据处理
-readStream.on("data", chunk => {
+readStream.on("data", (chunk: Buffer) => {
   // 拼接上次剩余字节
   const combinedBuffer = Buffer.concat([carryOverBuffer, chunk]);
   // 只处理偶数字节（16bit 对齐）
@@ -31,7 +31,7 @@ readStream.on("data", chunk => {
   // 小端 16bit 转为 Int16Array
   const samples = new Int16Array(processableBuffer.buffer, processableBuffer.byteOffset, processableBuffer.length / 2);
 
-  const samplesToWrite = [];
+  const samplesToWrite: number[] = [];
 
   for (const sample of samples) {
     const isSilent = Math.abs(sample) < amplitudeThreshold; // 静音判定

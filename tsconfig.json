@@ -2,15 +2,27 @@
   // 指定需要编译文件 否则默认当前目录下除了exclude之外的所有.ts, .d.ts,.tsx 文件
   //"include": ["./"],
   // 不编译某些文件
-  "exclude": ["*.js", "*.d.ts", "node_modules"],
+  "exclude": [
+    "*.js",
+    "*.d.ts",
+    "node_modules",
+    "dist"
+  ],
   "compilerOptions": {
-    "lib": ["ESNext", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
-    // 只编译修改过的文件,这个时候会生成tsconfig.tsbuildinfo,下次编译的时候会进行对比只编译修改过的文件
-    "incremental": true,
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable",
+      "DOM.AsyncIterable"
+    ],
+    "rootDir": "./", // 限制源码根目录在 src
+    "outDir": "./dist", // 编译产物统一输出到 dist，绝不污染 src
+    "types": [
+      "node"
+    ],
     // 指定 ECMAScript 目标版本: 'ES3' (default), 'ES5', 'ES2015', 'ES2016', 'ES2017', or 'ESNEXT'
     "target": "ESNEXT",
     "pretty": true,
-
     // 指定使用模块: 'commonjs', 'amd', 'system', 'umd' or 'es2015'
     "module": "commonjs",
     /* 注意：如果未指定--lib，则会注入默认的librares列表。注入的默认库为：
@@ -22,19 +34,17 @@
     // 指定 jsx 代码的生成: 'preserve', 'react-native', or 'react'
     /* 如果设为true，编译每个ts文件之后会生成一个js文件和一个声明文件,
       declaration和allowJs不能同时设为true */
-    "declaration": false,
+    "declaration": true,
     // 值为true或false，指定是否为声明文件.d.ts生成map文件
-    "declarationMap": false,
+    "declarationMap": true,
     // 用来指定编译时是否生成.map文件
     "sourceMap": true,
     // 是否编译构建引用项目,很复杂后面介绍
-    "composite": false,
+    "composite": true,
     // 编译的时候删除注释
     "removeComments": true,
     // 不生成编译文件，这个一般比较少用,这个build目录下将没有任何文件,但是会进行编译,有错误会抛出
     "noEmit": false,
-    // 当target为'ES5' or 'ES3'时，为'for-of', spread, and destructuring'中的迭代器提供完全支持
-    "downlevelIteration": true,
     // isolatedModules的值为true或false，指定是否将每个文件作为单独的模块，默认为true，它不可以和declaration同时设定
     // 不是很理解,将每一个文件作为单独模块
     //"isolatedModules": true,
@@ -78,7 +88,6 @@
     "allowUmdGlobalAccess": true,
     // inlineSources用于指定是否进一步将ts文件的内容也包含到输出文件中
     "inlineSources": true,
-
     // experimentalDecorators用于指定是否启用实验性的装饰器特性
     "experimentalDecorators": true,
     "skipLibCheck": true
