@@ -43,13 +43,15 @@ class Package extends stream.Readable {
       if (isDirectory || isFile) {
         if (isDirectory && !fullPath.endsWith(path.sep)) fullPath += path.sep;
         if (!fullPath.startsWith(root)) throw new Error("不支持上层文件夹" + fullPath + ",root:" + root);
+        const { birthtimeMs, ctimeMs, mtimeMs, atimeMs } = stats;
+        const ctime = Math.min(ctimeMs || birthtimeMs, birthtimeMs || ctimeMs);
         fileList.push({
           fullPath,
           relativePath: fullPath.substring(root.length),
           size: stats.size,
-          ctimeMs: stats.ctimeMs,
-          mtimeMs: stats.mtimeMs,
-          atimeMs: stats.atimeMs,
+          ctimeMs: ctime, //Math.min(ctime || mtimeMs, mtimeMs || ctime),
+          mtimeMs,
+          atimeMs,
         });
         if (isDirectory) {
           for (const file of await fs.promises.readdir(fullPath)) {
