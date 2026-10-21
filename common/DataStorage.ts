@@ -1,7 +1,5 @@
 export const isServer = typeof window === "undefined";
 
-const fs = isServer ? ((0, eval)("require")("fs") as typeof import("fs")) : undefined;
-
 const localStorage = isServer ? undefined : globalThis.localStorage;
 
 /**
@@ -64,6 +62,7 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
   private readonly dataMap: Partial<T> = {};
   /** 等待初始化 */
   public isInitialized: Promise<void>;
+  private readonly fs: typeof import("node:fs") | null = null;
 
   constructor(
     /** 各数据项的默认值以及数据转换方式。 */
@@ -72,6 +71,7 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
     /** 持久化存储使用的路径或 key 前缀。 */
     private readonly storagePath: string
   ) {
+    this.fs = isServer ? globalThis.require("fs") : null;
     this.isInitialized = this.syncAll();
   }
 
@@ -159,7 +159,7 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
   public readFile(path: string): string | undefined {
     if (!this.storagePath) return undefined;
     try {
-      if (fs) return String(fs.readFileSync(path, "utf-8"));
+      if (this.fs) return String(this.fs.readFileSync(path, "utf-8"));
       if (localStorage) return localStorage.getItem(path) ?? undefined;
     } catch (err) {
       console.log(err);
@@ -177,7 +177,7 @@ export class DataStorage<T extends Record<string, IDataStorage<any>>> {
    * @param value 要保存的字符串。
    */
   public writeFile(path: string, value: string): void {
-    if (fs) return fs.writeFileSync(path, value);
+    if (this.fs) return this.fs.writeFileSync(path, value);
     if (localStorage) return localStorage.setItem(path, value);
   }
 }
