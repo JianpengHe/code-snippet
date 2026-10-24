@@ -4,6 +4,7 @@ import { XML } from "../../tools/dist/node/XML";
 
 // 定义 XML 解析中需要处理成数组的路径节点
 const LIST_ARRAY_KEYS = ["ListBucketResult/Contents", "ListBucketResult/CommonPrefixes"];
+
 // --- 辅助工具函数 ---
 
 /**
@@ -31,6 +32,12 @@ function hmacSha1Hex(key: string, message: string): string {
 function sha1Hex(message: string): string {
   return crypto.createHash("sha1").update(message).digest("hex");
 }
+
+/**
+ * 确保路径以斜杠开头
+ */
+const formatPath = (path: string) => (path.startsWith("/") ? path : `/${path}`);
+
 export class QCloudCos {
   private readonly host: string;
 
@@ -38,7 +45,8 @@ export class QCloudCos {
     private readonly secretId: string,
     private readonly secretKey: string,
     bucket: string,
-    region: string = "ap-guangzhou"
+    region: string = "ap-guangzhou",
+    private readonly commonHeaders: Record<string, string | string[]> = {}
   ) {
     this.host = `${bucket}.cos.${region}.myqcloud.com`;
   }
@@ -65,7 +73,7 @@ export class QCloudCos {
       host: this.host,
       ...Object.fromEntries(
         (
-          Object.entries(customHeaders).map(([k, v]) =>
+          Object.entries({ ...this.commonHeaders, ...customHeaders }).map(([k, v]) =>
             v === undefined ? undefined : [k.toLowerCase(), Array.isArray(v) ? v.join(",") : String(v)]
           ) as any
         ).filter(Boolean)
@@ -124,7 +132,7 @@ export class QCloudCos {
       headers,
       body,
       ...(body ? { duplex: "half" } : {}),
-    });
+    } as RequestInit);
   }
 
   /**
@@ -143,7 +151,7 @@ export class QCloudCos {
         size: Number(item.Size || 0),
         etag: item.ETag?.replace(/"/g, "") || "",
       });
-
+    if (prefixPath.startsWith("/")) prefixPath = prefixPath.substring(1);
     while (pageSize > 0) {
       const response = await this.request("GET", "/", {
         prefix: prefixPath,
@@ -177,18 +185,40 @@ export class QCloudCos {
    * @param customHeaders 自定义请求头（可传入 content-type 等）
    */
   public async upload(key: string, body: BodyInit, customHeaders: Record<string, string | string[]> = {}) {
-    // 确保 COS 对象路径以斜杠开头
-    const pathname = key.startsWith("/") ? key : `/${key}`;
-
-    // 上传文件使用 PUT 方法，赋予较长的签名有效期（如 300 秒）
-    const response = await this.request("PUT", pathname, {}, customHeaders, 300, body);
+    const response = await this.request("PUT", formatPath(key), {}, customHeaders, 5, body);
 
     if (!response.ok) throw new Error(`COS Upload Failed [${response.status}]: ${await response.text()}`);
 
-    // 返回状态码和文件的 ETag 标识
     return {
-      status: response.status,
+      success: true,
       etag: response.headers.get("etag")?.replace(/"/g, "") || "",
+    };
+  }
+
+  /**
+   * 追加文件内容到 COS（对应 POST Object - Append Object 接口）
+   * @param key 对象键（路径，例如 "logs/app.log"）
+   * @param body 追加的数据内容（支持 Buffer、string、ReadableStream 等）
+   * @param position 追加起始位置（字节偏移量。首次追加传 0，后续追加需传入上一次返回的 nextAppendPosition）
+   * @param customHeaders 自定义请求头
+   */
+  public async append(
+    key: string,
+    body: BodyInit,
+    position: number = 0,
+    customHeaders: Record<string, string | string[]> = {}
+  ) {
+    const response = await this.request("PUT", formatPath(key), { append: "", position }, customHeaders, 5, body);
+
+    const responseText = await response.text();
+
+    if (!response.ok) throw new Error(`COS Append Failed [${response.status}]: ${responseText}`);
+
+    return {
+      success: true,
+      etag: response.headers.get("etag")?.replace(/"/g, "") || "",
+      size: Number(response.headers.get("content-length") || 0),
+      nextAppendPosition: Number(response.headers.get("x-cos-next-append-position") || 0),
     };
   }
 
@@ -198,14 +228,85 @@ export class QCloudCos {
    * @returns 返回 fetch 的 Response 对象，可通过 response.arrayBuffer() 或 response.text() 获取文件内容
    */
   public async download(key: string): Promise<Response> {
-    // 确保 COS 对象路径以斜杠开头
-    const pathname = key.startsWith("/") ? key : `/${key}`;
-
-    const response = await this.request("GET", pathname);
+    const response = await this.request("GET", formatPath(key));
 
     if (!response.ok) throw new Error(`COS Download Failed [${response.status}]: ${await response.text()}`);
 
     return response;
+  }
+
+  /**
+   * 复制 COS 中的对象（对应 PUT Object - Copy 接口）
+   * @param sourceKey 源对象键（路径）
+   * @param targetKey 目标对象键（路径）
+   */
+  public async copy(sourceKey: string, targetKey: string) {
+    const copySourceHeader = `${this.host}${formatPath(sourceKey).split("/").map(cosUrlEncode).join("/")}`;
+    const response = await this.request("PUT", formatPath(targetKey), {}, { "x-cos-copy-source": copySourceHeader });
+    const responseText = await response.text();
+
+    if (!response.ok) throw new Error(`COS Copy Failed [${response.status}]: ${responseText}`);
+
+    const result = XML.parse(responseText).CopyObjectResult;
+    return {
+      success: true,
+      etag: result?.ETag?.replace(/"/g, "") || "",
+      lastModified: result?.LastModified ? new Date(result.LastModified) : null,
+    };
+  }
+
+  /**
+   * 删除 COS 中的对象（对应 DELETE Object 接口）
+   * @param key 对象键（路径）
+   */
+  public async delete(key: string) {
+    const response = await this.request("DELETE", formatPath(key));
+    const responseText = await response.text();
+
+    // DELETE 成功通常返回 204 No Content
+    if (!response.ok && response.status !== 204)
+      throw new Error(`COS Delete Failed [${response.status}]: ${responseText}`);
+
+    return { success: true };
+  }
+
+  /**
+   * 重命名 COS 中的对象（通过“复制到新路径 + 删除原路径”组合实现）
+   * @param sourceKey 原对象键（路径）
+   * @param targetKey 新对象键（路径）
+   */
+  public async rename(sourceKey: string, targetKey: string) {
+    if (sourceKey === targetKey) return { success: true };
+
+    // 1. 先将文件复制到新路径
+    const copyResult = await this.copy(sourceKey, targetKey);
+
+    // 2. 复制成功后，安全删除原路径的文件
+    await this.delete(sourceKey);
+
+    return copyResult;
+  }
+
+  /**
+   * 获取文件元信息
+   * @param key 对象键（路径）
+   */
+  public async head(key: string) {
+    const response = await this.request("HEAD", formatPath(key));
+
+    if (!response.ok) {
+      // 如果文件不存在，返回 null
+      if (response.status === 404) return null;
+      throw new Error(`COS Head Failed [${response.status}]: ${await response.text()}`);
+    }
+
+    const lastModified = response.headers.get("last-modified");
+    return {
+      success: true,
+      size: Number(response.headers.get("content-length") || 0),
+      etag: response.headers.get("etag")?.replace(/"/g, "") || "",
+      lastModified: lastModified ? new Date(lastModified) : null,
+    };
   }
 }
 
@@ -219,13 +320,28 @@ export const ReadableStreamToRequestBody = stream.Readable.toWeb as unknown as (
 // import * as fs from "fs";
 // async function run() {
 //   // 实例化时传入 secretId, secretKey, 存储桶名称(带 appId), 地域
-//   const cos = new QCloudCos("xxxxxx", "xxxxxx", "temp-125xxxxxx", "ap-guangzhou");
+//   const cos = new QCloudCos("xxxxxx", "xxxxxx", "temp-125000000", "ap-guangzhou", {
+//     "x-cos-forbid-overwrite": "true",
+//   });
 //   const result = await cos.list("images/", false, 10);
 //   console.log(result, result.length);
 //   /** 下载文件 */
 //   ResponseBodyToReadableStream((await cos.download(result[0].path)).body!).pipe(fs.createWriteStream("./avatar.png"));
+//   /** 删除文件 */
+//   console.log(await cos.delete("avatar.png"));
 //   /** 上传文件 */
 //   console.log(await cos.upload("t.png", ReadableStreamToRequestBody(fs.createReadStream("./avatar.png"))));
+//   /** 复制文件 */
+//   console.log(await cos.copy("t.png", "t2.png"));
+//   /** 重命名文件 */
+//   console.log(await cos.rename("t2.png", "t3.png"));
+//   /** 获取文件元信息 */
+//   const headResult = await cos.head("1.txt");
+//   console.log(headResult);
+//   /** 追加文件 */
+//   console.log(
+//     await cos.append("1.txt", ReadableStreamToRequestBody(fs.createReadStream("1.txt")), headResult?.size || 0)
+//   );
 // }
 
 // run();
