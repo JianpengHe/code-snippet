@@ -1,7 +1,9 @@
 import * as crypto from "crypto";
+import * as https from "https";
 import * as stream from "stream";
 import { XML } from "../../tools/dist/node/XML";
 
+import type * as http from "http";
 // 定义 XML 解析中需要处理成数组的路径节点
 const LIST_ARRAY_KEYS = ["ListBucketResult/Contents", "ListBucketResult/CommonPrefixes"];
 
@@ -38,6 +40,18 @@ function sha1Hex(message: string): string {
  */
 const formatPath = (path: string) => (path.startsWith("/") ? path : `/${path}`);
 
+const streamClose = (stream: stream.Stream) => new Promise((resolve, reject) => stream.once("close", resolve));
+
+const isResOk = ({ statusCode }: http.IncomingMessage) => statusCode && statusCode >= 200 && statusCode < 300;
+
+const getResText = (response: http.IncomingMessage) =>
+  new Promise<string>((resolve, reject) => {
+    const body: Buffer[] = [];
+    response.on("data", chunk => body.push(chunk));
+    response.on("error", reject);
+    response.on("end", () => resolve(String(Buffer.concat(body))));
+  });
+
 export class QCloudCos {
   private readonly host: string;
 
@@ -46,7 +60,8 @@ export class QCloudCos {
     private readonly secretKey: string,
     bucket: string,
     region: string = "ap-guangzhou",
-    private readonly commonHeaders: Record<string, string | string[]> = {}
+    private readonly commonHeaders: Record<string, string | string[]> = {},
+    private readonly agent: https.Agent = new https.Agent({ keepAlive: true })
   ) {
     this.host = `${bucket}.cos.${region}.myqcloud.com`;
   }
@@ -66,8 +81,8 @@ export class QCloudCos {
     query: Record<string, string | number | boolean | null | undefined> = {},
     customHeaders: Record<string, string | string[]> = {},
     expires: number = 5,
-    body?: BodyInit | null
-  ): Promise<Response> {
+    body?: stream.Readable | Buffer | string
+  ): Promise<http.IncomingMessage> {
     // 1. 规范化请求头（确保包含小写的 host，并将自定义头转为小写及标准格式）
     const headers: Record<string, string> = {
       host: this.host,
@@ -124,15 +139,18 @@ export class QCloudCos {
       `q-signature=${signature}`,
     ].join("&");
 
-    // 7. 拼接最终请求完整 URL 并通过原生 fetch 发送
+    // 7. 拼接最终请求完整 URL 并通过 https.request 发送，复用 Agent 连接
     const url = `https://${this.host}${pathname}${canonicalQueryString ? "?" + canonicalQueryString : ""}`;
 
-    return fetch(url, {
-      method: httpMethod,
-      headers,
-      body,
-      ...(body ? { duplex: "half" } : {}),
-    } as RequestInit);
+    return new Promise<http.IncomingMessage>((resolve, reject) => {
+      const req = https.request(url, { method, headers, agent: this.agent }, resolve);
+      req.on("error", reject);
+      if (body instanceof stream.Readable) {
+        body.pipe(req);
+      } else {
+        req.end(body);
+      }
+    });
   }
 
   /**
@@ -159,12 +177,12 @@ export class QCloudCos {
         marker: nextFile,
         "max-keys": Math.min(pageSize, 2000),
       });
+      const responseText = await getResText(response);
 
-      if (!response.ok) throw new Error(`COS List Failed [${response.status}]: ${await response.text()}`);
+      if (!isResOk(response)) throw new Error(`COS List Failed [${response.statusCode}]: ${responseText}`);
 
-      const { IsTruncated, Contents, CommonPrefixes, MaxKeys, NextMarker } = XML.parse(
-        await response.text(),
-        ({ path }) => LIST_ARRAY_KEYS.includes(path.join("/"))
+      const { IsTruncated, Contents, CommonPrefixes, MaxKeys, NextMarker } = XML.parse(responseText, ({ path }) =>
+        LIST_ARRAY_KEYS.includes(path.join("/"))
       ).ListBucketResult;
 
       CommonPrefixes?.forEach(setMap);
@@ -184,14 +202,19 @@ export class QCloudCos {
    * @param body 文件内容（支持 Buffer、Uint8Array、string、Blob、ReadableStream 等）
    * @param customHeaders 自定义请求头（可传入 content-type 等）
    */
-  public async upload(key: string, body: BodyInit, customHeaders: Record<string, string | string[]> = {}) {
+  public async upload(
+    key: string,
+    body: stream.Readable | Buffer | string,
+    customHeaders: Record<string, string | string[]> = {}
+  ) {
     const response = await this.request("PUT", formatPath(key), {}, customHeaders, 5, body);
+    const responseText = await getResText(response);
 
-    if (!response.ok) throw new Error(`COS Upload Failed [${response.status}]: ${await response.text()}`);
+    if (!isResOk(response)) throw new Error(`COS Upload Failed [${response.statusCode}]: ${responseText}`);
 
     return {
       success: true,
-      etag: response.headers.get("etag")?.replace(/"/g, "") || "",
+      etag: response.headers?.["etag"]?.replace(/"/g, "") || "",
     };
   }
 
@@ -204,35 +227,40 @@ export class QCloudCos {
    */
   public async append(
     key: string,
-    body: BodyInit,
+    body: stream.Readable | Buffer | string,
     position: number = 0,
     customHeaders: Record<string, string | string[]> = {}
   ) {
     const response = await this.request("PUT", formatPath(key), { append: "", position }, customHeaders, 5, body);
+    const responseText = await getResText(response);
 
-    const responseText = await response.text();
-
-    if (!response.ok) throw new Error(`COS Append Failed [${response.status}]: ${responseText}`);
+    if (!isResOk(response)) throw new Error(`COS Append Failed [${response.statusCode}]: ${responseText}`);
 
     return {
       success: true,
-      etag: response.headers.get("etag")?.replace(/"/g, "") || "",
-      size: Number(response.headers.get("content-length") || 0),
-      nextAppendPosition: Number(response.headers.get("x-cos-next-append-position") || 0),
+      etag: response.headers?.["etag"]?.replace(/"/g, "") || "",
+      size: Number(response.headers?.["content-length"] || 0),
+      nextAppendPosition: Number(response.headers?.["x-cos-next-append-position"] || 0),
     };
   }
 
   /**
    * 从 COS 下载文件（对应 GET Object 接口）
    * @param key 对象键（文件在 COS 中的路径，例如 "images/avatar.png"）
-   * @returns 返回 fetch 的 Response 对象，可通过 response.arrayBuffer() 或 response.text() 获取文件内容
+   * @returns 返回兼容标准 Response 接口的对象，可通过 response.arrayBuffer() 或 response.text() 获取文件内容
    */
-  public async download(key: string): Promise<Response> {
+  public async download(key: string) {
     const response = await this.request("GET", formatPath(key));
 
-    if (!response.ok) throw new Error(`COS Download Failed [${response.status}]: ${await response.text()}`);
+    if (!isResOk(response))
+      throw new Error(`COS Download Failed [${response.statusCode}]: ${await getResText(response)}`);
 
-    return response;
+    return {
+      success: true,
+      etag: response.headers?.["etag"]?.replace(/"/g, "") || "",
+      size: Number(response.headers?.["content-length"] || 0),
+      stream: response,
+    };
   }
 
   /**
@@ -243,9 +271,9 @@ export class QCloudCos {
   public async copy(sourceKey: string, targetKey: string) {
     const copySourceHeader = `${this.host}${formatPath(sourceKey).split("/").map(cosUrlEncode).join("/")}`;
     const response = await this.request("PUT", formatPath(targetKey), {}, { "x-cos-copy-source": copySourceHeader });
-    const responseText = await response.text();
+    const responseText = await getResText(response);
 
-    if (!response.ok) throw new Error(`COS Copy Failed [${response.status}]: ${responseText}`);
+    if (!isResOk(response)) throw new Error(`COS Copy Failed [${response.statusCode}]: ${responseText}`);
 
     const result = XML.parse(responseText).CopyObjectResult;
     return {
@@ -261,11 +289,11 @@ export class QCloudCos {
    */
   public async delete(key: string) {
     const response = await this.request("DELETE", formatPath(key));
-    const responseText = await response.text();
+    const responseText = await getResText(response);
 
     // DELETE 成功通常返回 204 No Content
-    if (!response.ok && response.status !== 204)
-      throw new Error(`COS Delete Failed [${response.status}]: ${responseText}`);
+    if (!isResOk(response) && response.statusCode !== 204)
+      throw new Error(`COS Delete Failed [${response.statusCode}]: ${responseText}`);
 
     return { success: true };
   }
@@ -293,28 +321,22 @@ export class QCloudCos {
    */
   public async head(key: string) {
     const response = await this.request("HEAD", formatPath(key));
-
-    if (!response.ok) {
+    const responseText = await getResText(response);
+    if (!isResOk(response)) {
       // 如果文件不存在，返回 null
-      if (response.status === 404) return null;
-      throw new Error(`COS Head Failed [${response.status}]: ${await response.text()}`);
+      if (response.statusCode === 404) return null;
+      throw new Error(`COS Head Failed [${response.statusCode}]: ${responseText}`);
     }
 
-    const lastModified = response.headers.get("last-modified");
+    const lastModified = response.headers?.["last-modified"];
     return {
       success: true,
-      size: Number(response.headers.get("content-length") || 0),
-      etag: response.headers.get("etag")?.replace(/"/g, "") || "",
+      size: Number(response.headers?.["content-length"] || 0),
+      etag: response.headers?.["etag"]?.replace(/"/g, "") || "",
       lastModified: lastModified ? new Date(lastModified) : null,
     };
   }
 }
-
-export const ResponseBodyToReadableStream = stream.Readable.fromWeb as unknown as (
-  response: ReadableStream<any>
-) => stream.Readable;
-
-export const ReadableStreamToRequestBody = stream.Readable.toWeb as unknown as (stream: stream.Readable) => BodyInit;
 
 // 测试用例
 // import * as fs from "fs";
@@ -326,11 +348,13 @@ export const ReadableStreamToRequestBody = stream.Readable.toWeb as unknown as (
 //   const result = await cos.list("images/", false, 10);
 //   console.log(result, result.length);
 //   /** 下载文件 */
-//   ResponseBodyToReadableStream((await cos.download(result[0].path)).body!).pipe(fs.createWriteStream("./avatar.png"));
+//   const writeStream = fs.createWriteStream("./avatar.png");
+//   (await cos.download(result[0].path)).stream.pipe(writeStream);
+//   await streamClose(writeStream);
 //   /** 删除文件 */
 //   console.log(await cos.delete("avatar.png"));
 //   /** 上传文件 */
-//   console.log(await cos.upload("t.png", ReadableStreamToRequestBody(fs.createReadStream("./avatar.png"))));
+//   console.log(await cos.upload("t.png", fs.createReadStream("./avatar.png")));
 //   /** 复制文件 */
 //   console.log(await cos.copy("t.png", "t2.png"));
 //   /** 重命名文件 */
@@ -339,9 +363,7 @@ export const ReadableStreamToRequestBody = stream.Readable.toWeb as unknown as (
 //   const headResult = await cos.head("1.txt");
 //   console.log(headResult);
 //   /** 追加文件 */
-//   console.log(
-//     await cos.append("1.txt", ReadableStreamToRequestBody(fs.createReadStream("1.txt")), headResult?.size || 0)
-//   );
+//   console.log(await cos.append("1.txt", fs.createReadStream("1.txt"), headResult?.size || 0));
 // }
 
 // run();
