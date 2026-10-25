@@ -40,13 +40,26 @@ export class ReliableWebSocketServer<T> {
      * 向指定 WebSocket 发送握手响应。
      * 当前协议中，响应内容包含文件完整性标识和服务端已有文件大小。
      */
-    private sendKeepDataIntegrityKey: (info: IReliableWebSocketServerInfo<T>, data: string) => void,
+    private readonly sendBuffer: (info: IReliableWebSocketServerInfo<T>, data: string | Buffer) => void,
 
     /**
      * 握手协议使用的固定标识。
      */
-    private KeepDataIntegrityKey: string
+    private readonly KeepDataIntegrityKey: string
   ) {}
+
+  private timer: NodeJS.Timeout | undefined = undefined;
+  private timerFn() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    let runNextTime = false;
+    for (const [id, info] of this.map) {
+      if (info.closing || !info.downstream.isOpen()) continue;
+      this.sendBuffer(info, this.KeepDataIntegrityKey + "->" + info.downstream.getSize());
+      runNextTime = true;
+    }
+    if (runNextTime) this.timer = setTimeout(this.timerFn.bind(this), 60 * 1000);
+  }
 
   /**
    * 以文件 id 为 key，保存当前已经登记的会话。
@@ -119,6 +132,7 @@ export class ReliableWebSocketServer<T> {
        */
       const map = { ...info, closing: undefined, downstream };
       this.map.set(info.id, map);
+      if (!this.timer) this.timer = setTimeout(this.timerFn.bind(this), 60 * 1000);
 
       /**
        * 获取服务端已有文件大小，作为前端断点续传的起始偏移量。
@@ -144,7 +158,7 @@ export class ReliableWebSocketServer<T> {
       if (curMap?.ws === info.ws && !curMap.closing && downstream.isOpen()) {
         // 告知前端服务端已保存的数据大小。
         // 前端收到后，才能从对应偏移量继续发送音频。
-        this.sendKeepDataIntegrityKey(info, this.KeepDataIntegrityKey + "->" + size);
+        this.sendBuffer(info, this.KeepDataIntegrityKey + "->" + size);
 
         return true;
       }
