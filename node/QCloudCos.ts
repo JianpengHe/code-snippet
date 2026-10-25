@@ -44,7 +44,7 @@ const streamClose = (stream: stream.Stream) => new Promise((resolve, reject) => 
 
 const isResOk = ({ statusCode }: http.IncomingMessage) => statusCode && statusCode >= 200 && statusCode < 300;
 
-const getResText = (response: http.IncomingMessage) =>
+export const getResText = (response: http.IncomingMessage) =>
   new Promise<string>((resolve, reject) => {
     const body: Buffer[] = [];
     response.on("data", chunk => body.push(chunk));
@@ -66,23 +66,13 @@ export class QCloudCos {
     this.host = `${bucket}.cos.${region}.myqcloud.com`;
   }
 
-  /**
-   * 统一的腾讯云 COS 请求方法（内部自动完成 V5 签名并发送请求）
-   * @param method HTTP 请求方法 (如 'GET', 'PUT', 'POST', 'DELETE')
-   * @param pathname 请求的绝对路径 (如 '/' 或 '/example.png')
-   * @param query URL 查询参数对象
-   * @param customHeaders 自定义 HTTP 请求头对象
-   * @param expires 签名有效时间（秒），默认 5 秒
-   * @param body 请求体数据（仅用于 PUT / POST 等写入请求）
-   */
-  public async request(
+  private createRequest(
     method: string,
     pathname: string,
     query: Record<string, string | number | boolean | null | undefined> = {},
     customHeaders: Record<string, string | string[]> = {},
-    expires: number = 5,
-    body?: stream.Readable | Buffer | string
-  ): Promise<http.IncomingMessage> {
+    expires: number = 5
+  ): https.RequestOptions {
     // 1. 规范化请求头（确保包含小写的 host，并将自定义头转为小写及标准格式）
     const headers: Record<string, string> = {
       host: this.host,
@@ -140,10 +130,35 @@ export class QCloudCos {
     ].join("&");
 
     // 7. 拼接最终请求完整 URL 并通过 https.request 发送，复用 Agent 连接
-    const url = `https://${this.host}${pathname}${canonicalQueryString ? "?" + canonicalQueryString : ""}`;
+    return {
+      protocol: "https:",
+      host: this.host,
+      path: `${pathname}${canonicalQueryString ? "?" + canonicalQueryString : ""}`,
+      method,
+      headers,
+      agent: this.agent,
+    };
+  }
 
+  /**
+   * 统一的腾讯云 COS 请求方法（内部自动完成 V5 签名并发送请求）
+   * @param method HTTP 请求方法 (如 'GET', 'PUT', 'POST', 'DELETE')
+   * @param pathname 请求的绝对路径 (如 '/' 或 '/example.png')
+   * @param query URL 查询参数对象
+   * @param customHeaders 自定义 HTTP 请求头对象
+   * @param expires 签名有效时间（秒），默认 5 秒
+   * @param body 请求体数据（仅用于 PUT / POST 等写入请求）
+   */
+  public async request(
+    method: string,
+    pathname: string,
+    query: Record<string, string | number | boolean | null | undefined> = {},
+    customHeaders: Record<string, string | string[]> = {},
+    expires: number = 5,
+    body?: stream.Readable | Buffer | string
+  ): Promise<http.IncomingMessage> {
     return new Promise<http.IncomingMessage>((resolve, reject) => {
-      const req = https.request(url, { method, headers, agent: this.agent }, resolve);
+      const req = https.request(this.createRequest(method, pathname, query, customHeaders, expires), resolve);
       req.on("error", reject);
       if (body instanceof stream.Readable) {
         body.pipe(req);
@@ -216,6 +231,14 @@ export class QCloudCos {
       success: true,
       etag: response.headers?.["etag"]?.replace(/"/g, "") || "",
     };
+  }
+
+  public uploadStream(
+    key: string,
+    response: (res: http.IncomingMessage) => void,
+    customHeaders: Record<string, string | string[]> = {}
+  ) {
+    return https.request(this.createRequest("PUT", formatPath(key), {}, customHeaders, 5), response);
   }
 
   /**
