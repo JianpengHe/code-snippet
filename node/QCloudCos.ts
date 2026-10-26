@@ -272,8 +272,10 @@ export class QCloudCos {
    * @param key 对象键（文件在 COS 中的路径，例如 "images/avatar.png"）
    * @returns 返回兼容标准 Response 接口的对象，可通过 response.arrayBuffer() 或 response.text() 获取文件内容
    */
-  public async download(key: string) {
-    const response = await this.request("GET", formatPath(key));
+  public async download(key: string, start?: number, end?: number) {
+    const e = end !== undefined && end !== null ? end - 1 : "";
+    const Range = start !== undefined || end !== undefined ? `bytes=${start ?? 0}-${e}` : "";
+    const response = await this.request("GET", formatPath(key), {}, { Range });
 
     if (!isResOk(response))
       throw new Error(`COS Download Failed [${response.statusCode}]: ${await getResText(response)}`);
