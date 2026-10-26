@@ -27,8 +27,8 @@ export class ReliableWebSocket {
     this.reconnect();
   }
   public reconnect() {
-    if (!this.url || this.reConTimer || this.webSocket?.readyState === 1) return;
-    if (this.webSocket?.readyState === 0) {
+    if (!this.url || this.reConTimer || this.webSocket?.readyState === WebSocket.OPEN) return;
+    if (this.webSocket?.readyState === WebSocket.CONNECTING) {
       this.reConTimer = Number(
         setTimeout(() => {
           this.reConTimer && clearTimeout(this.reConTimer);
@@ -50,18 +50,21 @@ export class ReliableWebSocket {
         if (ReliableWebSocket.isKeepDataIntegrity(e.data)) {
           // e.stopPropagation();
           const saveSize = Number(e.data.split("->")[1]);
-
-          while (this.sentBufs.length > 0 && saveSize > this.sentSize) {
-            const needDelSize = saveSize - this.sentSize;
-            const curBufSize = this.sentBufs[0].byteLength;
-            /** 待删除数据大小小于当前缓冲区大小，需要截断当前缓冲区 */
-            if (needDelSize < curBufSize) {
-              this.sentBufs[0] = this.sentBufs[0].slice(needDelSize);
-              this.sentSize += needDelSize;
-              break;
+          if (saveSize === -1) {
+            this.sentBufs.length = 0;
+          } else {
+            while (this.sentBufs.length > 0 && saveSize > this.sentSize) {
+              const needDelSize = saveSize - this.sentSize;
+              const curBufSize = this.sentBufs[0].byteLength;
+              /** 待删除数据大小小于当前缓冲区大小，需要截断当前缓冲区 */
+              if (needDelSize < curBufSize) {
+                this.sentBufs[0] = this.sentBufs[0].slice(needDelSize);
+                this.sentSize += needDelSize;
+                break;
+              }
+              this.sentSize += curBufSize;
+              this.sentBufs.shift();
             }
-            this.sentSize += curBufSize;
-            this.sentBufs.shift();
           }
           /** 首次连接时，需要将上次连接断开后，没发到服务器的数据，重新添加到待发送数据队列 */
           if (this.isReadyToSend === false) {

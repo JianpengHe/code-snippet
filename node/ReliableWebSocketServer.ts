@@ -55,7 +55,7 @@ export class ReliableWebSocketServer<T> {
     let runNextTime = false;
     for (const [id, info] of this.map) {
       if (info.closing || !info.downstream.isOpen()) continue;
-      this.sendBuffer(info, this.KeepDataIntegrityKey + "->" + info.downstream.getSize());
+      info.downstream.getSize().then(size => this.sendBuffer(info, this.KeepDataIntegrityKey + "->" + size));
       runNextTime = true;
     }
     if (runNextTime) this.timer = setTimeout(this.timerFn.bind(this), 60 * 1000);
