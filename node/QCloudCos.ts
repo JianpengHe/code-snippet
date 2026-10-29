@@ -66,7 +66,7 @@ export class QCloudCos {
     this.host = `${bucket}.cos.${region}.myqcloud.com`;
   }
 
-  private createRequest(
+  public createRequest(
     method: string,
     pathname: string,
     query: Record<string, string | number | boolean | null | undefined> = {},
