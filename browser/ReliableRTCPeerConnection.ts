@@ -11,6 +11,8 @@ import { MyEvent } from "../common/手写事件";
 export type SignalingMessage =
   // 不带 targetId 的 join 是连接请求，带 targetId 的 join 是确认，确认不再触发回复。
   | { type: "join"; data: string; targetId?: string }
+  // 对端链路已断开。服务端只透传，不带连接 id。
+  | { type: "leave" }
   | ((
       | { type: "offer"; data: string }
       | { type: "answer"; data: string }
@@ -35,6 +37,8 @@ export type PeerConnectionEventMap = {
   beforeCreateOfferAnswer: (peerConnection: RTCPeerConnection) => void;
   // 连接关闭时触发。
   close: () => void;
+  // 收到对端 leave 并清掉它的 id 后触发。本端仍可等待下一位。
+  remoteClose: () => void;
   // WebRTC 连接成功建立时触发。
   connected: (peerConnection: RTCPeerConnection) => void;
   // 当接收到远端的媒体轨道（Track）时触发。
@@ -129,7 +133,8 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
     if (!this.hasTurnServer(list)) throw new Error("没有 turn: 或 turns: 服务器");
     // 换成新数组，避免改到调用方或其他实例仍在共用的那一份。
     this.rtcConfig.iceServers = [...(this.rtcConfig.iceServers ?? []), ...list];
-    if (!this.isClosed && !this.isConnected()) this.reconnect();
+    // 还没有对端 id 时没有 PC 可重建，配置留到下次真正握手再生效。
+    if (!this.isClosed && !this.isConnected() && this.remoteId) this.reconnect();
   }
 
   private hasTurnServer(servers: RTCIceServer[] = this.rtcConfig.iceServers ?? []): boolean {
@@ -152,10 +157,11 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
     // 本地主动重连才换 ID，让对端能识别并清理上一轮连接；此时还不能自行确定角色。
     this.myId = Math.random().toString(36).substring(2);
     this.role = "answer";
-    this.armNegotiationTimeout();
     // 调用方已经挂好监听，这里直接发出。start 再次进入时会先换掉 myId，旧的 join 不会补发。
     const myId = this.myId;
     this.emit("signaling", { type: "join", data: myId });
+    // 没人报过 id 就只等着，不启动超时重试，避免空房间把重连次数耗尽。
+    if (this.remoteId) this.armNegotiationTimeout();
   }
 
   /** 本地重连或远端换代都可能走到这里，先关闭旧 PC，避免两套原生连接继续发事件。 */
@@ -203,8 +209,8 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
   private async handleNegotiationNeeded(): Promise<void> {
     const pc = this.peerConnection;
     this.log("触发 handleNegotiationNeeded");
-    if (this.role === "answer") {
-      this.log("角色为 'answer'，不主动发起协商。");
+    if (this.role === "answer" || !this.remoteId) {
+      this.log("角色为 'answer' 或尚未得到对端 ID，不主动发起协商。");
       return;
     }
 
@@ -357,7 +363,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
     this.clearNegotiationTimeout();
     this.negotiationTimerId = window.setTimeout(() => {
       this.negotiationTimerId = 0;
-      if (!this.isClosed) {
+      if (!this.isClosed && this.remoteId) {
         this.log("协商或 ICE 建连超时，重新通知对端建立连接。");
         this.reconnect();
       }
@@ -466,6 +472,17 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
       return;
     }
 
+    if (message.type === "leave") {
+      // 一对一透传只有当前这一位对端。用本端已保存的 id 做清理，不重发 join。
+      if (!this.remoteId) return;
+      this.retiredRemoteIds.add(this.remoteId);
+      this.remoteId = null;
+      this.role = "answer";
+      this.cleanupPeerConnection();
+      this.emit("remoteClose");
+      return;
+    }
+
     const pc = this.peerConnection;
     // 3. SDP/ICE 必须属于当前双方连接，且轮次有效；迟到的旧 Answer 不能消耗新 Offer。
     if (
@@ -492,7 +509,7 @@ export class ReliableRTCPeerConnection extends MyEvent<PeerConnectionEventMap> {
   }
 
   private async processSignalingMessage(
-    message: Exclude<SignalingMessage, { type: "join" }>,
+    message: Exclude<SignalingMessage, { type: "join" } | { type: "leave" }>,
     pc: RTCPeerConnection
   ): Promise<void> {
     const { type, data, negotiationId } = message;

@@ -620,6 +620,46 @@ test("a one-time beforeNegotiation failure immediately retries the handshake", a
   }
 });
 
+test("waiting without a remote id does not negotiate or retry", async t => {
+  const environment = createEnvironment();
+  t.after(environment.close);
+  const peer = environment.createPeer("first", 0.1, { negotiationTimeoutMs: 40, maxReconnectAttempts: 2 });
+  await environment.flush();
+  assert.equal(peer.peerConnection, null);
+  await environment.advanceTime(200);
+  assert.equal(
+    environment.history.filter(({ from, message }) => from === peer && message.type === "join" && !message.targetId)
+      .length,
+    1
+  );
+  assert.equal(peer.peerConnection, null);
+});
+
+test("a remote leave clears that peer and ignores its later join", async t => {
+  const environment = createEnvironment();
+  t.after(environment.close);
+  const { first, second } = await connectPair(environment, { negotiationTimeoutMs: 40 });
+  const remoteId = environment.history.find(
+    ({ from, message }) => from === second && message.type === "join" && !message.targetId
+  ).message.data;
+  let left = 0;
+  first.on("remoteClose", () => left++);
+  const before = environment.history.length;
+  await first.onSignalingMessage({ type: "leave" });
+  assert.equal(left, 1);
+  assert.equal(first.peerConnection, null);
+  await first.onSignalingMessage({ type: "leave" });
+  assert.equal(left, 1);
+  await environment.advanceTime(80);
+  assert.equal(environment.history.slice(before).filter(({ from }) => from === first).length, 0);
+  await first.onSignalingMessage({ type: "join", data: remoteId });
+  await environment.flush();
+  assert.equal(first.peerConnection, null);
+  await first.onSignalingMessage({ type: "join", data: "a-new-peer" });
+  await environment.flush();
+  assert.ok(first.peerConnection);
+});
+
 test("a missing answer times out and starts a fresh handshake", async t => {
   const environment = createEnvironment();
   t.after(environment.close);
