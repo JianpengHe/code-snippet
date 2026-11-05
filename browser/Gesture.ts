@@ -190,10 +190,10 @@ export class Gesture {
    *
    * @param targetEl - 可选的目标元素，默认使用已绑定的 boundElement
    */
-  public fitToScreen(targetEl: HTMLElement | null = this.boundElement) {
+  public fitToScreen(targetEl = this.boundElement ?? undefined, { width, height } = this.measureSize(targetEl)) {
+    console.log("width, height", width, height);
     if (!targetEl) return;
 
-    const { width, height } = this.measureSize(targetEl);
     if (width === 0 || height === 0) return;
 
     // 更新 transformOrigin 为当前元素中心
@@ -271,7 +271,8 @@ export class Gesture {
    * 读取 offsetWidth/offsetHeight。在下一个屏幕绘制（paint）之前恢复原有样式，
    * 绝不会在屏幕上产生任何视觉闪烁（Reflow 但不会触发 Paint）。
    */
-  public measureSize(el: HTMLElement): { width: number; height: number } {
+  public measureSize(el?: HTMLElement): { width: number; height: number } {
+    if (!el) return { width: 0, height: 0 };
     let width = el.offsetWidth;
     let height = el.offsetHeight;
 
