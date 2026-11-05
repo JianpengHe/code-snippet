@@ -60,9 +60,8 @@ export class Gesture {
   private onGestureEndTimer = 0;
   private onEnd(ev: TouchEvent | MouseEvent) {
     //ev.preventDefault();
-    for (const k in this.transformRes) {
-      this.preEndTransformRes[k] = this.transformRes[k];
-    }
+    // 修复：用 Object.assign 替代 for...in，避免遍历原型链且类型安全
+    Object.assign(this.preEndTransformRes, this.transformRes);
     const points = this.getPonits(ev);
 
     if (ev.type === "mouseup" || (ev.type === "touchend" && this.getPonits(ev, true).length === 0)) {
@@ -108,8 +107,14 @@ export class Gesture {
         this.onGestureEnd(this.transformRes, this.startPoints);
       }, 10)
     );
-    if (ev instanceof WheelEvent) this.onEnd(ev);
-    this.transform({ points, rotate: 0, scale: (ev["wheelDeltaY"] || 0) < 0 ? 0.7 : 1.5 });
+    // 修复：不再调用 this.onEnd(ev)，避免 WheelEvent 传给 TouchEvent|MouseEvent 参数的类型不匹配
+    // 内联保存状态和重置起始点（原 onEnd 在 wheel 事件下实际只做这两件事）
+    Object.assign(this.preEndTransformRes, this.transformRes);
+    this.startPoints.points = points;
+    this.startPoints.rad = 0;
+    this.startPoints.distance = 1;
+    // 修复：使用标准 deltaY 替代废弃的 wheelDeltaY（方向相反：deltaY > 0 = 向下滚 = 缩小）
+    this.transform({ points, rotate: 0, scale: ev instanceof WheelEvent ? (ev.deltaY > 0 ? 0.7 : 1.5) : 1.5 });
   }
 
   private onStart(ev: TouchEvent | MouseEvent) {
