@@ -1,13 +1,13 @@
-/** 
- * 手势二维坐标点类型 
+/**
+ * 手势二维坐标点类型
  */
-export type IGesturePoint = { 
-  x: number; 
-  y: number; 
+export type IGesturePoint = {
+  x: number;
+  y: number;
 };
 
-/** 
- * 手势变换结果数据类型 
+/**
+ * 手势变换结果数据类型
  */
 export type IGestureTransformRes = {
   /** X 轴平移量（px） */
@@ -87,8 +87,8 @@ export class Gesture {
   /** 手势刚开始（按下一瞬间）的触摸点基准信息（弧度、点间距及各点坐标） */
   private startPoints: { rad: number; distance: number; points: IGesturePoint[] } = { points: [], rad: 0, distance: 0 };
 
-  /** 
-   * 连续点击 / 双击状态机跟踪器 
+  /**
+   * 连续点击 / 双击状态机跟踪器
    * - expire: 双击判断有效截止时间戳
    * - type: "start"（首次按下未松开）| "firstPoint"（首次抬起，正等待第 2 次点击）| ""（空闲状态）
    */
@@ -213,6 +213,55 @@ export class Gesture {
 
     // 重置变换状态（旋转清零，平移与缩放居中归位）
     this.resetTo(translateX, translateY, 0, scale);
+  }
+
+  /**
+   * 动态更新目标尺寸（支持视频流分辨率切换、画布动态扩容等场景）
+   *
+   * 运算逻辑：
+   *   1. 比例检查：
+   *      - 若宽高比发生明显改变（超过 2%，如 16:9 横屏切 9:16 竖屏），自动触发 fitToScreen() 重新等比居中。
+   *      - 若宽高比保持一致（如 720P 升级为 1080P），进行数学无缝补偿，保持屏幕视觉绝对不动，无感知刷新。
+   *
+   * @param oldWidth 旧的宽度像素值
+   * @param oldHeight 旧的高度像素值
+   * @param newWidth 新的宽度像素值
+   * @param newHeight 新的高度像素值
+   */
+  public updateSize(oldWidth: number, oldHeight: number, newWidth: number, newHeight: number) {
+    if (!oldWidth || !oldHeight || !newWidth || !newHeight) return;
+
+    // 尺寸完全无变动直接返回
+    if (oldWidth === newWidth && oldHeight === newHeight) return;
+
+    const el = this.boundElement;
+
+    // 同步更新 DOM 盒模型尺寸与手势中心原点
+    if (el) {
+      el.style.width = `${newWidth}px`;
+      el.style.height = `${newHeight}px`;
+      el.style.transformOrigin = `${newWidth / 2}px ${newHeight / 2}px`;
+    }
+    this.transformOrigin = { x: newWidth / 2, y: newHeight / 2 };
+
+    // 宽高比例一致性判断（允许约 2% 的浮点舍入误差）
+    const oldRatio = oldWidth / oldHeight;
+    const newRatio = newWidth / newHeight;
+    const isRatioChanged = Math.abs(oldRatio - newRatio) > 0.02;
+
+    // 比例改变（如横竖屏切换）：无法维持原有相对视野，执行 fitToScreen 重新自适应屏幕居中
+    if (isRatioChanged) {
+      this.fitToScreen();
+      return;
+    }
+
+    // 比例一致（如 720P -> 1080P）：执行无缝平移与缩放补偿，视觉呈现分毫不动
+    const scaleFactor = oldWidth / newWidth;
+    const newScale = this.transformRes.scale * scaleFactor;
+    const newTx = this.transformRes.translateX + (oldWidth - newWidth) / 2;
+    const newTy = this.transformRes.translateY + (oldHeight - newHeight) / 2;
+
+    this.resetTo(newTx, newTy, this.transformRes.rotate, newScale);
   }
 
   /**
@@ -567,7 +616,7 @@ export class Gesture {
   /**
    * 计算指定点绕 transformOrigin 旋转特定弧度并缩放后的坐标点
    * 用于补偿由于元素旋转和缩放造成的视觉轴心飘移，维持手指触摸点与图形对应位置相对静止
-   * 
+   *
    * 参考数学推导：https://blog.csdn.net/weixin_34910922/article/details/121569340
    */
   public afterRotate(p: IGesturePoint, rad: number, scale: number): IGesturePoint {
@@ -644,4 +693,33 @@ hiddenDiv.style.display = "block";
 // ------------------------------------------
 // const gestureManual = new Gesture({ x: 100, y: 100 });
 // myEl.addEventListener("touchstart", gestureManual.onStartListener);
+
+// ------------------------------------------
+// 示例 4：WebRTC 视频流动态分辨率无缝更新（业务方峰值锁定 + Gesture 比例自适应）
+// ------------------------------------------
+// const video = document.querySelector("video")!;
+// const gesture = new Gesture(video, false);
+//
+// // 业务方自行维护峰值锁定逻辑
+// let peakWidth = 0;
+// let peakHeight = 0;
+//
+// const onResize = () => {
+//   const newW = video.videoWidth;
+//   const newH = video.videoHeight;
+//   if (!newW || !newH) return;
+//
+//   // 峰值锁定：只增不降，低码率时不缩回
+//   const oldW = peakWidth || newW;
+//   const oldH = peakHeight || newH;
+//   peakWidth = Math.max(peakWidth, newW);
+//   peakHeight = Math.max(peakHeight, newH);
+//
+//   // 仅当峰值真正变化时才通知 Gesture 更新
+//   if (peakWidth !== oldW || peakHeight !== oldH) {
+//     gesture.updateSize(oldW, oldH, peakWidth, peakHeight);
+//   }
+// };
+// video.addEventListener("resize", onResize);
+// video.addEventListener("loadedmetadata", onResize);
 */
