@@ -39,13 +39,40 @@ export type IGestureTransformRes = {
  *     const gesture = new Gesture({ x: 100, y: 100 });
  *     dom.addEventListener("touchstart", gesture.onStartListener);
  */
+/**
+ * 手势配置选项
+ */
+export type IGestureOptions = {
+  /** 传入 DOM 节点时，是否自动自适应屏幕居中显示（默认 false） */
+  autoFit?: boolean;
+  /** 允许旋转的度数列表（例如 [0, 90, 180, 270]，默认 [0, 90, 180, 270]） */
+  allowedRotations?: number[];
+  /** 允许的最小缩放比例（默认 0.1） */
+  minScale?: number;
+  /** 允许的最大缩放比例（默认 10） */
+  maxScale?: number;
+  /** DOM 宽度（measureSize 优先使用） */
+  width?: number;
+  /** DOM 高度（measureSize 优先使用） */
+  height?: number;
+  /** 松开手指后，修正动画持续时间（ms）（默认 300ms） */
+  animDuration?: number;
+};
+
 export class Gesture {
   /**
    * 构造函数
    * @param target - 可传入 HTMLElement 直接一键自动绑定；也可传入 IGesturePoint 手动指定中心点（默认 {x: 0, y: 0}）
    * @param autoFit - 传入 DOM 时，是否在初始化完成后自动执行屏幕等比居中缩放（默认为 true）
    */
-  constructor(target: IGesturePoint | HTMLElement = { x: 0, y: 0 }, autoFit = true) {
+  constructor(target: IGesturePoint | HTMLElement = { x: 0, y: 0 }, opt: IGestureOptions = {}) {
+    if (opt.autoFit === undefined) opt.autoFit = true;
+    if (opt.allowedRotations === undefined) opt.allowedRotations = [0, 90, 180, 270];
+    if (opt.minScale === undefined) opt.minScale = 0.1;
+    if (opt.maxScale === undefined) opt.maxScale = 10;
+    if (opt.animDuration === undefined) opt.animDuration = 300;
+    this.opt = opt as Required<IGestureOptions>;
+
     // 预先绑定事件函数的 this 指向，确保作为监听器传递时不丢失上下文
     this.onStartListener = this.onStart.bind(this);
     this.onMoveListener = this.onMove.bind(this);
@@ -54,7 +81,7 @@ export class Gesture {
 
     if (typeof HTMLElement !== "undefined" && target instanceof HTMLElement) {
       this.transformOrigin = { x: 0, y: 0 };
-      this.bindElement(target, autoFit);
+      this.bindElement(target, opt.autoFit);
     } else {
       this.transformOrigin = target as IGesturePoint;
     }
@@ -83,6 +110,14 @@ export class Gesture {
 
   /** 当前由本手势实例全权托管的 DOM 节点 */
   public boundElement: HTMLElement | null = null;
+
+  public readonly opt: Required<IGestureOptions>;
+
+  /** 过渡动画锁定到期时间戳（ms），此期间拦截一切手势操作 */
+  private animLockExpire = 0;
+
+  /** 最后一帧双指触摸的几何中点（作为松手后旋转吸附的轴心） */
+  private lastTouchCenter: IGesturePoint | null = null;
 
   /** 手势刚开始（按下一瞬间）的触摸点基准信息（弧度、点间距及各点坐标） */
   private startPoints: { rad: number; distance: number; points: IGesturePoint[] } = { points: [], rad: 0, distance: 0 };
@@ -114,10 +149,6 @@ export class Gesture {
   public destroy() {
     this.unbind();
     this.removeAllListener();
-    if (this.onGestureEndTimer) {
-      clearTimeout(this.onGestureEndTimer);
-      this.onGestureEndTimer = 0;
-    }
     if (this.rafId) {
       cancelAnimationFrame(this.rafId);
       this.rafId = 0;
@@ -141,10 +172,10 @@ export class Gesture {
    * @param el - 需要手势控制的 HTMLElement（如 div、img、canvas 等）
    * @param autoFit - 是否在绑定后自动执行屏幕自适应居中（默认为 true）
    */
-  public bindElement(el: HTMLElement, autoFit = true): this {
+  public bindElement(el: HTMLElement, autoFit = false): this {
     // 幂等防护：防止对同一个元素重复绑定造成事件监听层叠
     if (this.boundElement === el) {
-      if (autoFit) this.fitToScreen(el);
+      if (autoFit) this.fitToScreen();
       return this;
     }
 
@@ -153,17 +184,22 @@ export class Gesture {
     this.boundElement = el;
 
     // 1. 获取元素真实尺寸（安全兼容隐藏 DOM）
-    const { width, height } = this.measureSize(el);
+    const { width, height } = this.measureSize();
 
     // 2. 将变换原点设为元素几何中心
     this.transformOrigin = { x: width / 2, y: height / 2 };
 
     // 3. 配置手势所需的基准样式，确保基于视口左上角定位并屏蔽系统默认手势
-    el.style.position = "fixed";
-    el.style.left = "0";
-    el.style.top = "0";
-    el.style.touchAction = "none"; // 屏蔽移动端浏览器默认滚动/下拉刷新
-    el.style.transformOrigin = `${this.transformOrigin.x}px ${this.transformOrigin.y}px`;
+    Object.assign(el.style, {
+      position: "fixed",
+      left: "0",
+      top: "0",
+      userDrag: "none",
+      webkitUserDrag: "none",
+      touchAction: "none",
+      transformOrigin: `${this.transformOrigin.x}px ${this.transformOrigin.y}px`,
+      transform: "",
+    });
 
     // 4. 自动连接变换回调，把生成的 transformText 作用到节点上
     this.onTransform = ({ transformText }) => {
@@ -177,7 +213,7 @@ export class Gesture {
     el.addEventListener("dblclick", this.onScaleListener, false);
 
     // 6. 默认自适应屏幕视口居中
-    if (autoFit) this.fitToScreen(el);
+    if (autoFit) this.fitToScreen();
 
     return this;
   }
@@ -190,15 +226,14 @@ export class Gesture {
    *
    * @param targetEl - 可选的目标元素，默认使用已绑定的 boundElement
    */
-  public fitToScreen(targetEl = this.boundElement ?? undefined, { width, height } = this.measureSize(targetEl)) {
+  public fitToScreen({ width, height } = this.measureSize()) {
     console.log("width, height", width, height);
-    if (!targetEl) return;
-
-    if (width === 0 || height === 0) return;
+    const el = this.boundElement;
+    if (!el || width === 0 || height === 0) return;
 
     // 更新 transformOrigin 为当前元素中心
     this.transformOrigin = { x: width / 2, y: height / 2 };
-    targetEl.style.transformOrigin = `${this.transformOrigin.x}px ${this.transformOrigin.y}px`;
+    el.style.transformOrigin = `${this.transformOrigin.x}px ${this.transformOrigin.y}px`;
 
     // 当前视口宽度与高度
     const screenWidth = window.innerWidth;
@@ -271,13 +306,13 @@ export class Gesture {
    * 读取 offsetWidth/offsetHeight。在下一个屏幕绘制（paint）之前恢复原有样式，
    * 绝不会在屏幕上产生任何视觉闪烁（Reflow 但不会触发 Paint）。
    */
-  public measureSize(el?: HTMLElement): { width: number; height: number } {
-    if (!el) return { width: 0, height: 0 };
-    let width = el.offsetWidth;
-    let height = el.offsetHeight;
+  public measureSize(): { width: number; height: number } {
+    const el = this.boundElement;
+    const output = { width: this.opt.width ?? el?.offsetWidth ?? 0, height: this.opt.height ?? el?.offsetHeight ?? 0 };
+    if (!el) return output;
 
-    // 已经处于渲染流中且有宽高，直接返回
-    if (width > 0 && height > 0) return { width, height };
+    // 已经处于渲染流中且有宽高（或已预设有效宽高），直接返回
+    if (output.width > 0 && output.height > 0) return output;
 
     // 针对隐藏元素，在同步 JS 宏任务里临时切换测量，读取完立即同步复原
     const saved = {
@@ -292,12 +327,12 @@ export class Gesture {
       position: "absolute",
     });
 
-    width = el.offsetWidth;
-    height = el.offsetHeight;
+    output.width = el.offsetWidth;
+    output.height = el.offsetHeight;
 
     // 立即同步恢复原始样式
     Object.assign(el.style, saved);
-    return { width, height };
+    return output;
   }
 
   /**
@@ -313,10 +348,61 @@ export class Gesture {
     this.onTransform(this.transformRes);
   }
 
-  /** 允许的最小缩放比例（默认 0.1，防止元素被捏成负数倒置或缩小到 0 丢失） */
-  public minScale = 0.1;
-  /** 允许的最大缩放比例（默认 10 倍） */
-  public maxScale = 10;
+  /**
+   * 最后的旋转修正：松手后直接根据最后一帧元素的当前角度，平滑吸附到允许的度数（allowedRotations）
+   * 纯就地中心旋转，保持当前平移与缩放不动，杜绝锚点漂移失真
+   */
+  private correctRotation() {
+    if (!this.opt.allowedRotations || this.opt.allowedRotations.length === 0) return;
+
+    const currentDeg = (this.transformRes.rotate * 180) / Math.PI;
+
+    let minDiff = Infinity;
+    let bestSlotDeg = currentDeg;
+    for (const deg of this.opt.allowedRotations) {
+      let diff = (deg - currentDeg) % 360;
+      if (diff > 180) diff -= 360;
+      if (diff < -180) diff += 360;
+      if (Math.abs(diff) < minDiff) {
+        minDiff = Math.abs(diff);
+        bestSlotDeg = deg;
+      }
+    }
+
+    // 计算从 currentDeg 到 bestSlotDeg 的最短相对差值，避免 360° 绕圈
+    let targetDiff = (bestSlotDeg - currentDeg) % 360;
+    if (targetDiff > 180) targetDiff -= 360;
+    if (targetDiff < -180) targetDiff += 360;
+    const targetRotate = ((currentDeg + targetDiff) * Math.PI) / 180;
+
+    const isRotateChanged = Math.abs(targetRotate - this.transformRes.rotate) > 0.001;
+    if (isRotateChanged) {
+      let targetTx = this.transformRes.translateX;
+      let targetTy = this.transformRes.translateY;
+
+      // 如果有最后一帧双指中点，则以此中点作为旋转中心进行平移补偿
+      if (this.lastTouchCenter) {
+        const anchor = this.lastTouchCenter;
+        const deltaRotate = targetRotate - this.transformRes.rotate;
+
+        const vx = anchor.x - this.transformRes.translateX - this.transformOrigin.x;
+        const vy = anchor.y - this.transformRes.translateY - this.transformOrigin.y;
+
+        const afterVx = Math.cos(deltaRotate) * vx - Math.sin(deltaRotate) * vy;
+        const afterVy = Math.sin(deltaRotate) * vx + Math.cos(deltaRotate) * vy;
+
+        targetTx = anchor.x - this.transformOrigin.x - afterVx;
+        targetTy = anchor.y - this.transformOrigin.y - afterVy;
+      }
+
+      if (this.boundElement) {
+        this.boundElement.style.transition = `transform ${this.opt.animDuration}ms ease-out`;
+      }
+      this.animLockExpire = performance.now() + this.opt.animDuration;
+      this.resetTo(targetTx, targetTy, targetRotate, this.transformRes.scale);
+      this.lastTouchCenter = null;
+    }
+  }
 
   /** rAF 动画帧 ID 与待处理的手势位移缓存（实现 60/120Hz 渲染节流） */
   private rafId = 0;
@@ -332,25 +418,39 @@ export class Gesture {
    * @param obj.rotate - 相对于手势开始时的旋转增量（弧度）
    * @param obj.scale - 相对于手势开始时的缩放倍数
    */
-  public transform(obj: { points: IGesturePoint[]; rotate: number; scale: number }) {
+  private transform(obj: { points: IGesturePoint[]; rotate: number; scale: number }) {
     this.beforeTransform(obj, this.transformRes);
     const { points, rotate, scale } = obj;
 
-    // 1. 基础缩放边界限制（限制在 [minScale, maxScale] 内）
-    let effectiveScale = scale;
-    const targetScale = this.preEndTransformRes.scale * scale;
-    if (targetScale < this.minScale) {
-      effectiveScale = this.minScale / (this.preEndTransformRes.scale || 1);
-    } else if (targetScale > this.maxScale) {
-      effectiveScale = this.maxScale / (this.preEndTransformRes.scale || 1);
+    // 1. 拖动过程中直接限制缩放比例在 [minScale, maxScale] 区间内，不允许超限
+    let targetScale = this.preEndTransformRes.scale * scale;
+    if (targetScale < this.opt.minScale) {
+      targetScale = this.opt.minScale;
+    } else if (targetScale > this.opt.maxScale) {
+      targetScale = this.opt.maxScale;
     }
+    const effectiveScale = targetScale / (this.preEndTransformRes.scale || 1);
 
-    // 2. 计算基准点经过旋转和缩放变换后的相对偏移，用以补偿平移量
-    const afterRotatePoint = this.afterRotate(this.startPoints.points[0] || points[0], rotate, effectiveScale);
+    // 2. 计算触点几何中心（双指时为两指中点，单指时为单指触点）
+    const currentCenter =
+      points.length >= 2
+        ? { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }
+        : points[0] || { x: 0, y: 0 };
 
-    // 3. 计算最终平移、旋转与缩放（叠加上一轮手势锁存的值）
-    this.transformRes.translateX = points[0].x - afterRotatePoint.x + this.preEndTransformRes.translateX;
-    this.transformRes.translateY = points[0].y - afterRotatePoint.y + this.preEndTransformRes.translateY;
+    const startCenter =
+      this.startPoints.points.length >= 2
+        ? {
+            x: (this.startPoints.points[0].x + this.startPoints.points[1].x) / 2,
+            y: (this.startPoints.points[0].y + this.startPoints.points[1].y) / 2,
+          }
+        : this.startPoints.points[0] || currentCenter;
+
+    // 3. 计算基准中心经过旋转和缩放变换后的相对偏移，用以补偿平移量
+    const afterRotatePoint = this.afterRotate(startCenter, rotate, effectiveScale);
+
+    // 4. 计算最终平移、旋转与缩放（叠加上一轮手势锁存的值）
+    this.transformRes.translateX = currentCenter.x - afterRotatePoint.x + this.preEndTransformRes.translateX;
+    this.transformRes.translateY = currentCenter.y - afterRotatePoint.y + this.preEndTransformRes.translateY;
     this.transformRes.rotate = rotate + this.preEndTransformRes.rotate;
     this.transformRes.scale = this.preEndTransformRes.scale * effectiveScale;
 
@@ -373,6 +473,9 @@ export class Gesture {
     if (points.length < 1) return;
 
     const isSingleFinger = points.length === 1;
+    if (!isSingleFinger) {
+      this.lastTouchCenter = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
+    }
     // 单指时使用初始值（不旋转不缩放），双指时按两点连线几何计算
     const newRad = isSingleFinger ? this.startPoints.rad : Gesture.getRad(points[0], points[1]);
     const newScale = isSingleFinger ? this.startPoints.distance : Gesture.getDistance(points[0], points[1]);
@@ -396,20 +499,15 @@ export class Gesture {
     }
   }
 
-  /** 手势结束延迟判定定时器（用于双击判定时间窗口） */
-  private onGestureEndTimer = 0;
-
   /**
    * 手势结束处理（touchend / mouseup / touchcancel）
    *
    * 1. 抬手时若有挂起的 rAF，立即同步执行结算，确保终态绝对精准。
    * 2. 将当前计算结果更新到 preEndTransformRes 中作为下一次基准。
-   * 3. 针对所有触点全部抬起的情况，判断是否属于双击并触发 onGestureEnd。
+   * 3. 针对所有触点全部抬起的情况，重置手势激活与双击状态。
    * 4. 针对多指转单指的平滑过渡，重置基准点信息。
    */
   private onEnd(ev: TouchEvent | MouseEvent) {
-    //ev.preventDefault();
-
     // 抬手瞬间如果还有未渲染的 rAF，立即同步执行，防止最终松手位置发生回退滞后
     if (this.rafId) {
       cancelAnimationFrame(this.rafId);
@@ -428,29 +526,18 @@ export class Gesture {
     if (ev.type === "mouseup" || (ev.type === "touchend" && this.getPonits(ev, true).length === 0)) {
       this.removeAllListener();
       this.isGestureActive = false;
-      const transformRes = { ...this.transformRes };
-      const startPoints = { ...this.startPoints };
-      const now = performance.now();
 
-      // 双击时间窗口判断
+      const now = performance.now();
       if (now > this.lastClickPoint.expire || this.lastClickPoint.type === "firstPoint") {
         this.lastClickPoint.expire = 0;
         this.lastClickPoint.type = "";
-        this.onGestureEndTimer && clearTimeout(this.onGestureEndTimer);
-        this.onGestureEndTimer = 0;
-        this.onGestureEnd(transformRes, startPoints);
       } else {
-        // 第一次点击后等待 350ms，若无第 2 次点击则触发常规结束
         this.lastClickPoint.expire = now + 300;
         this.lastClickPoint.type = "firstPoint";
-        this.onGestureEndTimer = Number(
-          setTimeout(() => {
-            this.onGestureEndTimer = 0;
-            if (this.isGestureActive) return;
-            this.onGestureEnd(transformRes, startPoints);
-          }, 350)
-        );
       }
+
+      // 仅保留最后的旋转修正
+      this.correctRotation();
     }
 
     // 更新剩余触点基准（多指抬起其中一只手指时，无缝降级为剩余手指的基准点，防止画面跳跃）
@@ -469,18 +556,9 @@ export class Gesture {
    * 使用标准 deltaY 属性（正值向下滚 = 缩小 0.7 倍；负值向上滚 = 放大 1.5 倍）
    */
   private onScale(ev: WheelEvent | MouseEvent) {
-    if (this.disable) return;
+    if (this.disable || performance.now() < this.animLockExpire) return;
+    if (this.boundElement) this.boundElement.style.transition = "";
     const points = this.getPonits(ev);
-
-    // 滚轮连续滚动防抖：滚动停止 10ms 后触发 onGestureEnd
-    this.onGestureEndTimer && clearTimeout(this.onGestureEndTimer);
-    this.onGestureEndTimer = Number(
-      setTimeout(() => {
-        this.onGestureEndTimer = 0;
-        if (this.isGestureActive) return;
-        this.onGestureEnd(this.transformRes, this.startPoints);
-      }, 10)
-    );
 
     // 内联保存变换状态为基准
     Object.assign(this.preEndTransformRes, this.transformRes);
@@ -488,23 +566,25 @@ export class Gesture {
     this.startPoints.rad = 0;
     this.startPoints.distance = 1;
 
+    const isWheel = ev instanceof WheelEvent;
     // deltaY > 0 为向下滚轮（缩小），反之放大
-    this.transform({ points, rotate: 0, scale: ev instanceof WheelEvent ? (ev.deltaY > 0 ? 0.7 : 1.5) : 1.5 });
+    this.transform({ points, rotate: 0, scale: isWheel ? (ev.deltaY > 0 ? 0.7 : 1.5) : 1.5 });
+    Object.assign(this.preEndTransformRes, this.transformRes);
   }
 
   /**
    * 手势按下初始处理（touchstart / mousedown）
    *
-   * 1. 记录手势激活状态，清除待执行的延迟结束定时器。
+   * 1. 记录手势激活状态。
    * 2. 执行双击时间窗口检测。
    * 3. 挂载 window 全局 move、up、cancel、blur 监听器。
    */
   private onStart(ev: TouchEvent | MouseEvent) {
-    if (this.disable) return;
+    if (this.disable || performance.now() < this.animLockExpire) return;
+    if (this.boundElement) this.boundElement.style.transition = "";
     this.isGestureActive = true;
-    this.onGestureEndTimer && clearTimeout(this.onGestureEndTimer);
-    this.onGestureEndTimer = 0;
     const points = this.getPonits(ev);
+    this.lastTouchCenter = points.length >= 2 ? { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 } : null;
 
     // 双击检测判定
     if (points.length === 1) {
@@ -574,8 +654,6 @@ export class Gesture {
   public onTransform = (transformRes: IGestureTransformRes): void => {};
   /** 手势开始时的回调 */
   public onGestureStart = (transformRes: IGestureTransformRes, startPoints: Gesture["startPoints"]): void => {};
-  /** 手势彻底结束时的回调（所有触点离开且通过双击窗口确认后触发，适合处理回弹/吸附动画） */
-  public onGestureEnd = (transformRes: IGestureTransformRes, startPoints: Gesture["startPoints"]): void => {};
   /** 是否正在进行手势交互 */
   public isGestureActive = false;
   /** 变换执行前的预处理回调（外部可在此动态修改 obj.rotate 或 obj.scale 进行干预） */
@@ -591,7 +669,7 @@ export class Gesture {
    * @param ev 原生事件对象
    * @param getRaw 是否获取未经处理的原始点数据（内部双击判定时使用）
    */
-  public getPonits(ev: TouchEvent | MouseEvent, getRaw = false): IGesturePoint[] {
+  private getPonits(ev: TouchEvent | MouseEvent, getRaw = false): IGesturePoint[] {
     const out: IGesturePoint[] = [];
     if (ev instanceof TouchEvent) {
       for (const { clientX, clientY } of ev.touches) {
@@ -620,7 +698,7 @@ export class Gesture {
    *
    * 参考数学推导：https://blog.csdn.net/weixin_34910922/article/details/121569340
    */
-  public afterRotate(p: IGesturePoint, rad: number, scale: number): IGesturePoint {
+  private afterRotate(p: IGesturePoint, rad: number, scale: number): IGesturePoint {
     const x = p.x - this.transformOrigin.x - this.preEndTransformRes.translateX;
     const y = p.y - this.transformOrigin.y - this.preEndTransformRes.translateY;
     return {
@@ -644,28 +722,7 @@ img.onload = () => {
   document.body.appendChild(img);
 
   // 极简使用：new Gesture(dom) 一步到位，自动修改样式、绑定监听、自适应屏幕居中
-  const gesture = new Gesture(img);
-
-  // 监听手势结束，增加吸附/边界回弹逻辑
-  gesture.onGestureEnd = (transformRes, startPoints) => {
-    // 限制最大缩放为 3 倍，最小为 0.5 倍
-    let scale = 1;
-    if (transformRes.scale > 3) {
-      scale = 3 / transformRes.scale;
-    } else if (transformRes.scale < 0.5) {
-      scale = 0.5 / transformRes.scale;
-    }
-    if (scale !== 1) {
-      img.style.transition = "transform 0.2s";
-      gesture.disable = true;
-      gesture.transform({ points: startPoints.points, scale, rotate: 0 });
-    }
-  };
-
-  img.ontransitionend = () => {
-    img.style.transition = "";
-    gesture.disable = false;
-  };
+  const gesture = new Gesture(img, { minScale: 0.5, maxScale: 3 });
 
   // 屏幕旋转或窗口缩放时，可再次调用 fitToScreen 自动重新居中
   window.addEventListener("resize", () => {
